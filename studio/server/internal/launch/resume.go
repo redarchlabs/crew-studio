@@ -75,7 +75,8 @@ func (l *Launcher) ResumeRun(ctx context.Context, p *auth.Principal, req ResumeR
 		return model.Run{}, false, err
 	}
 	meta := store.RunMeta{
-		AreaIDs: crew.AreaIDs, CreatedBy: p.UserID, CreatedByName: p.Name, TriggerType: req.TriggerType, Callback: cb,
+		// A key's limits apply while the run runs, as for a run started with it
+		AreaIDs: crew.AreaIDs, CreatedBy: p.UserID, CreatedByName: p.Name, APIKeyID: p.APIKeyID, TriggerType: req.TriggerType, Callback: cb,
 		Resume: &store.RunResume{FromRunID: src.ID, StartPosition: hint.StartPosition, Outputs: spec.Resume.Outputs},
 	}
 	if wo != nil {

@@ -445,3 +445,19 @@ func TestReusedOutputOfADeletedRun(t *testing.T) {
 		t.Fatalf("after deleting the earlier run: %+v %+v", got.ResumedFromRunID, out)
 	}
 }
+
+func TestResumeWithAnAPIKeyKeepsTheKeysLimits(t *testing.T) {
+	e := newEnv(t)
+	_, src := e.failedCrewRun(t)
+	key := e.personalKey(t, e.token)
+	r := e.as("").do(t, "POST", "/api/runs/"+src.ID+"/resume", map[string]any{}, "Authorization", "Bearer "+key)
+	wantStatus(t, r, http.StatusCreated)
+	resumed := decodeData[model.Run](t, r)
+	stored, err := e.st.GetRun(context.Background(), resumed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.APIKeyID == nil || resumed.TriggerType != "api" {
+		t.Fatalf("a run resumed with a key must record it: key %v, trigger %s", stored.APIKeyID, resumed.TriggerType)
+	}
+}

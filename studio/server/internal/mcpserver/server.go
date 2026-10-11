@@ -43,7 +43,7 @@ To change something:
    so someone else's newer edit is not overwritten. Use dry_run first when the change is large.
 4. After changing agents, tasks or LLMs a crew uses, call validate_crew on that crew.
 
-start_run and run_schedule_now start real runs that cost money; only use them when asked to.
+start_run, resume_run and run_schedule_now start real runs that cost money; only use them when asked to.
 Every change is recorded in Crew Studio's history (list_history) and can be reviewed there.
 
 Connections (kind "connection") hold settings only: secrets such as API keys are never set or shown through MCP.
