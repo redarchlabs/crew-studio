@@ -35,14 +35,15 @@ The **Roles** list is only shown if you also hold `admin.users` or `admin.roles`
 
 ## API keys
 
-The **API keys** panel lists every key of the account with its **Name**, a masked **Key** (for example `csk_ab12cd_…`), **Status** (active, expired or revoked), **Created**, **Expires** and **Last used**.
+The **API keys** panel lists every key of the account with its **Name**, a masked **Key** (for example `csk_ab12cd_…`), **Access** (where it works and whether it keeps all of the account's permissions and areas), **Status** (active, expired or revoked), **Created**, **Expires** and **Last used**.
 
 To create a key:
 
 1. Click **New key**.
 2. Enter a **Name**, usually the system or environment that will use it.
 3. Optionally pick an **Expires** date. The key stops working at the end of that day. Leave it empty for a key that does not expire.
-4. Click **Create key**.
+4. Optionally limit the key. **Works with** chooses the **REST API**, **MCP** or both. **Permissions** and **Functional areas** keep everything the account holds, or **Only these**. Only what the account holds is offered, and a key never gets more than the account has at the time of each request.
+5. Click **Create key**.
 
 The full key is shown **once**. Click **Copy**, store it somewhere safe (such as the other system's secret store), then click **I have saved it**. Crew Studio cannot show it again; if it is lost, revoke it and create another.
 

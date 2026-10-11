@@ -181,7 +181,7 @@ func (s *Scheduler) claim(ctx context.Context, sc model.Schedule, now time.Time)
 }
 
 func (s *Scheduler) fire(ctx context.Context, sc model.Schedule, now time.Time) {
-	p, err := s.launcher.RunAs(ctx, sc.RunAs)
+	p, err := s.launcher.RunAsKey(ctx, sc.RunAs, sc.RunAsKey)
 	if err != nil {
 		// Only pause for problems that will not fix themselves; a database hiccup just records the error
 		s.record(ctx, sc, nil, err, permanent(err))
@@ -247,7 +247,7 @@ func (s *Scheduler) launch(ctx context.Context, p *auth.Principal, sc model.Sche
 	if err != nil {
 		loc = time.UTC
 	}
-	ctx = store.WithActor(ctx, store.Actor{ID: p.UserID, Name: p.Name + " (schedule " + sc.Name + ")"})
+	ctx = store.WithActor(ctx, store.Actor{ID: p.UserID, Name: p.Name + " (schedule " + sc.Name + ")", APIKeyID: p.APIKeyID})
 	created, err := s.launcher.CreateWorkOrder(ctx, p, model.WorkOrderInput{
 		Title:  sc.Name + " · " + now.In(loc).Format("2006-01-02 15:04 MST"),
 		Brief:  sc.Brief,

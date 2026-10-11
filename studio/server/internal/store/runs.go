@@ -12,13 +12,13 @@ import (
 )
 
 const runColumns = `id, crew_id, crew_name, status, inputs, budget_usd, output, error, cost_usd, usage,
-	area_ids::text[], created_by, created_by_name, trigger_type, kind, work_order_id, created_at, started_at, finished_at`
+	area_ids::text[], created_by, created_by_name, trigger_type, kind, work_order_id, api_key_id::text, created_at, started_at, finished_at`
 
 func scanRun(row pgx.Row) (model.Run, error) {
 	var r model.Run
 	err := row.Scan(&r.ID, &r.CrewID, &r.CrewName, &r.Status, &r.Inputs, &r.BudgetUSD, &r.Output, &r.Error,
 		&r.CostUSD, &r.Usage, &r.AreaIDs, &r.CreatedBy, &r.CreatedByName, &r.TriggerType, &r.Kind, &r.WorkOrderID,
-		&r.CreatedAt, &r.StartedAt, &r.FinishedAt)
+		&r.APIKeyID, &r.CreatedAt, &r.StartedAt, &r.FinishedAt)
 	if r.Inputs == nil {
 		r.Inputs = map[string]string{}
 	}
@@ -39,8 +39,10 @@ type RunMeta struct {
 	AreaIDs       []string
 	CreatedBy     string
 	CreatedByName string
-	TriggerType   string
-	WorkOrderID   string
+	// APIKeyID is the key the run's starter used, if any
+	APIKeyID    string
+	TriggerType string
+	WorkOrderID string
 	// Kind is model.RunKindCrew (the default), model.RunKindChat or model.RunKindHandoff
 	Kind string
 	// ChatAgentID is the agent an agent-chat turn talks to (docs/agent-chat-design.md)
@@ -81,11 +83,11 @@ func insertRun(ctx context.Context, tx pgx.Tx, spec model.RunSpec, meta RunMeta,
 	}
 	run, err := scanRun(tx.QueryRow(ctx,
 		`INSERT INTO runs (crew_id, crew_name, status, inputs, budget_usd, spec, area_ids, created_by, created_by_name,
-		 trigger_type, kind, work_order_id, idempotency_scope, idempotency_key, chat_agent_id)
-		 VALUES ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING `+runColumns,
+		 trigger_type, kind, work_order_id, idempotency_scope, idempotency_key, chat_agent_id, api_key_id)
+		 VALUES ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING `+runColumns,
 		nullableUUID(spec.Crew.ID), spec.Crew.Name, inputsJSON, spec.BudgetUSD, specJSON, orEmpty(meta.AreaIDs),
 		nullableUUID(meta.CreatedBy), meta.CreatedByName, meta.TriggerType, meta.Kind, nullableUUID(meta.WorkOrderID), scope, key,
-		nullableUUID(meta.ChatAgentID)))
+		nullableUUID(meta.ChatAgentID), nullableUUID(meta.APIKeyID)))
 	if err != nil {
 		return model.Run{}, fmt.Errorf("create run: %w", err)
 	}

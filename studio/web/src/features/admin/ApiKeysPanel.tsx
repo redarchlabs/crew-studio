@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { KeyRound, Plus, XCircle } from 'lucide-react'
 import { accountApi, adminApi, type NewApiKeyInput } from '../../api/endpoints'
-import type { AccountApiKey, ApiKey, NewApiKey, Page } from '../../api/types'
+import type { AccountApiKey, ApiKey, Me, NewApiKey, Page, User } from '../../api/types'
 import { Button } from '../../components/Button'
 import { Panel } from '../../components/PageHeader'
 import { Pagination } from '../../components/Pagination'
@@ -11,7 +11,9 @@ import { ConfirmButton } from '../../components/misc'
 import { dateTime, relative } from '../../lib/format'
 import { notifyError, notifySuccess } from '../../lib/notify'
 import { useAsync } from '../../lib/useAsync'
+import { KeyAccess, useAreaNames } from './ApiKeyLimitsFields'
 import { NewKeyModal, SecretModal } from './apiKeyModals'
+import { scopeOfMe, scopeOfUser, type KeyScope } from './apiKeyLimits'
 import { keyStatus, maskedKey, sortKeys, type KeyStatus } from './apiKeys'
 
 /** Keys per page in an account's panel */
@@ -26,25 +28,32 @@ export type KeySource = {
   list: (page: { limit: number; offset: number }, signal: AbortSignal) => Promise<Page<AccountApiKey>>
   create?: (body: NewApiKeyInput) => Promise<NewApiKey>
   revoke: (keyId: string) => Promise<void>
+  /** What the account holds, the most a new key can be given; whose key it is, for the form's wording */
+  scope: KeyScope
+  who: 'you' | 'account'
 }
 
 /** Keys of a person or service account, managed by an admin; only service accounts get new keys here. */
-export function accountKeySource(userId: string, canCreate: boolean): KeySource {
+export function accountKeySource(user: User, canCreate: boolean): KeySource {
   return {
-    id: `account:${userId}`,
-    list: (page, signal) => adminApi.users.apiKeys(userId, page, signal),
-    create: canCreate ? (body) => adminApi.users.createApiKey(userId, body) : undefined,
-    revoke: (keyId) => adminApi.users.revokeApiKey(userId, keyId),
+    id: `account:${user.id}`,
+    list: (page, signal) => adminApi.users.apiKeys(user.id, page, signal),
+    create: canCreate ? (body) => adminApi.users.createApiKey(user.id, body) : undefined,
+    revoke: (keyId) => adminApi.users.revokeApiKey(user.id, keyId),
+    scope: scopeOfUser(user),
+    who: 'account',
   }
 }
 
 /** The signed-in person's own keys. */
-export function myKeySource(canCreate: boolean): KeySource {
+export function myKeySource(canCreate: boolean, me: Pick<Me, 'permissions' | 'all_areas' | 'area_ids'>): KeySource {
   return {
     id: 'me',
     list: (page, signal) => accountApi.apiKeys(page, signal),
     create: canCreate ? (body) => accountApi.createApiKey(body) : undefined,
     revoke: (keyId) => accountApi.revokeApiKey(keyId),
+    scope: scopeOfMe(me),
+    who: 'you',
   }
 }
 
@@ -62,13 +71,14 @@ export function RevokeKeyButton({ k, onRevoke }: { k: AccountApiKey; onRevoke: (
 }
 
 function KeysTable({ keys, onRevoke, emptyText }: { keys: readonly AccountApiKey[]; onRevoke: (key: ApiKey) => void; emptyText: string }) {
+  const areaName = useAreaNames()
   if (keys.length === 0) return <div className="px-4 py-6 text-center text-[12.5px] text-faint">{emptyText}</div>
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[680px] text-left">
+      <table className="w-full min-w-[860px] text-left">
         <thead className="border-b border-line">
           <tr className="eyebrow [&>th]:px-3 [&>th]:py-2 [&>th]:font-semibold">
-            <th>Name</th><th>Key</th><th>Status</th><th>Created</th><th>Expires</th><th>Last used</th><th />
+            <th>Name</th><th>Key</th><th>Access</th><th>Status</th><th>Created</th><th>Expires</th><th>Last used</th><th />
           </tr>
         </thead>
         <tbody>
@@ -76,6 +86,7 @@ function KeysTable({ keys, onRevoke, emptyText }: { keys: readonly AccountApiKey
             <tr key={k.id} className={`border-b border-line last:border-0 [&>td]:px-3 [&>td]:py-1.5 ${keyStatus(k) === 'active' ? '' : 'text-muted'}`}>
               <td className="font-medium">{k.name}</td>
               <td className="font-mono text-[11.5px]">{maskedKey(k.prefix)}</td>
+              <td><KeyAccess k={k} areaName={areaName} /></td>
               <td><KeyStatusChip k={k} /></td>
               <td className="whitespace-nowrap text-[12px]">{dateTime(k.created_at)}</td>
               <td className="whitespace-nowrap text-[12px]">{k.expires_at ? dateTime(k.expires_at) : <span className="text-faint">never</span>}</td>
@@ -139,6 +150,8 @@ export function ApiKeysPanel({ source, intro, emptyText, title = 'API keys' }: A
       </div>
       {creating && create && (
         <NewKeyModal
+          scope={source.scope}
+          who={source.who}
           create={(body) => create(body)}
           onClose={() => setCreating(false)}
           onCreated={(c) => {

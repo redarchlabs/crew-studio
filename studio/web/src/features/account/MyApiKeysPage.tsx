@@ -22,7 +22,7 @@ export function MyApiKeysPage() {
       <PageHeader
         eyebrow="Developers"
         title="My API keys"
-        description="Keys for scripts and tools that call the Crew Studio API as you, with your permissions and functional areas. Each key is shown once when you create it; Crew Studio stores only a one-way hash, so nobody can read it back."
+        description="Keys for scripts and MCP clients such as Claude Code that call Crew Studio as you, with your permissions and functional areas or only some of them. Each key is shown once when you create it; Crew Studio stores only a one-way hash, so nobody can read it back."
       />
       <div className="flex flex-col gap-4">
         {reason && (
@@ -32,8 +32,8 @@ export function MyApiKeysPage() {
           </div>
         )}
         <ApiKeysPanel
-          source={myKeySource(!reason)}
-          intro="A key does everything you can do, in your areas. Revoke one as soon as you stop using it or think it may have leaked."
+          source={myKeySource(!reason, me ?? { permissions: [], all_areas: false, area_ids: [] })}
+          intro="A key can do what you can, in your areas, unless you limit it when you create it: to the REST API or MCP, and to some of your permissions and areas. Revoke one as soon as you stop using it or think it may have leaked."
           emptyText={reason ? 'You have no API keys.' : 'No API keys yet. Create one for the script or tool that will call Crew Studio.'}
         />
         <Panel title="Using a key">

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { AllApiKeysPage, PAGE_SIZE } from './AllApiKeysPage'
-import { api, apiError, keyPage, makeKey, makeUser, notifyMock, renderRoute, resetAll } from './testUtils'
+import { api, apiError, keyPage, makeArea, makeKey, makeUser, notifyMock, renderRoute, resetAll } from './testUtils'
 import type { AccountApiKey, Permission } from '../../api/types'
 
 vi.mock('../../api/endpoints', async () => (await import('./testUtils')).endpointsMock)
@@ -44,6 +44,24 @@ describe('listing every key', () => {
     expect(within(pat).getByText('Person')).toBeTruthy()
     expect(within(rows()[2]).queryByRole('button', { name: 'Revoke' })).toBeNull()
     expect(screen.getByRole('link', { name: /history/i }).getAttribute('href')).toContain('entity_type=api_key')
+  })
+
+  it("shows each key's access: where it works and which permissions and areas it keeps", async () => {
+    resetAll(['admin.users', 'admin.service_accounts'])
+    api.areasApi.list.mockResolvedValue([makeArea({ id: 'a-1', name: 'IT' })])
+    api.adminApi.apiKeys.mockResolvedValue(keyPage([
+      { id: 'k-1', name: 'open', prefix: 'open1111' },
+      { id: 'k-2', name: 'narrow', prefix: 'narr2222', allow_api: false, permissions: ['crews.view', 'runs.view'], area_ids: ['a-1', 'a-gone'] },
+    ]))
+    renderRoute(<AllApiKeysPage />)
+    await screen.findByText('csk_narr2222_…')
+    const [open, narrow] = rows()
+    expect(within(open).getByText('API and MCP')).toBeTruthy()
+    expect(within(open).getByText('All permissions')).toBeTruthy()
+    expect(within(open).getByText('All areas')).toBeTruthy()
+    expect(within(narrow).getByText('MCP only')).toBeTruthy()
+    expect(within(narrow).getByText('2 permissions').getAttribute('title')).toBe('crews.view, runs.view')
+    expect(await within(narrow).findByText('IT, Deleted area')).toBeTruthy()
   })
 
   it('sends the filters to the server (search debounced) and starts again from the first page', async () => {
@@ -160,6 +178,82 @@ describe('revoking', () => {
 })
 
 describe('issuing a service account key', () => {
+  it('limits a key to what the chosen service account holds', async () => {
+    await open()
+    await screen.findByText('csk_erp11111_…')
+    api.areasApi.list.mockResolvedValue([makeArea({ id: 'a-1', name: 'IT' }), makeArea({ id: 'a-2', name: 'Finance' })])
+    api.adminApi.users.list.mockResolvedValue([
+      makeUser({ id: 's-1', kind: 'service', name: 'ERP', effective_permissions: ['crews.view', 'runs.view'], area_ids: ['a-1'] }),
+    ])
+    api.adminApi.users.createApiKey.mockResolvedValue({ key: makeKey({ id: 'k-new', user_id: 's-1' }), secret: 'csk_x' })
+    fireEvent.click(screen.getByRole('button', { name: 'New service account key' }))
+    const dialog = await screen.findByRole('dialog')
+    // Limits are chosen once the account is known
+    expect(within(dialog).queryByText('Works with')).toBeNull()
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'reporting' } })
+    fireEvent.change(within(dialog).getByLabelText('Service account'), { target: { value: 's-1' } })
+    fireEvent.click(within(dialog).getByLabelText('REST API'))
+    fireEvent.click(within(within(dialog).getByRole('group', { name: 'Permissions' })).getByLabelText('Only these'))
+    // Only the account's own permissions are offered
+    expect(await within(dialog).findAllByRole('checkbox', { name: 'View' })).toHaveLength(2)
+    expect(within(dialog).queryByRole('checkbox', { name: 'Edit' })).toBeNull()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Read only' }))
+    fireEvent.click(within(within(dialog).getByRole('group', { name: 'Functional areas' })).getByLabelText('Only these'))
+    expect(within(dialog).queryByRole('checkbox', { name: 'Finance' })).toBeNull()
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'IT' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create key' }))
+    await waitFor(() => expect(api.adminApi.users.createApiKey).toHaveBeenCalledWith('s-1', {
+      name: 'reporting', expires_at: null, allow_api: false, allow_mcp: true, permissions: ['crews.view', 'runs.view'], area_ids: ['a-1'],
+    }))
+  })
+
+  it('starts the limits over when another service account is picked', async () => {
+    await open()
+    await screen.findByText('csk_erp11111_…')
+    api.adminApi.users.list.mockResolvedValue([
+      makeUser({ id: 's-1', kind: 'service', name: 'ERP', effective_permissions: ['crews.view'] }),
+      makeUser({ id: 's-2', kind: 'service', name: 'Empty', effective_permissions: [] }),
+    ])
+    fireEvent.click(screen.getByRole('button', { name: 'New service account key' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('Service account'), { target: { value: 's-1' } })
+    const perms = () => within(within(dialog).getByRole('group', { name: 'Permissions' })).getByLabelText('Only these') as HTMLInputElement
+    fireEvent.click(perms())
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create key' }))
+    expect(within(dialog).getByText('Choose at least one permission')).toBeTruthy()
+    // An account with no permissions offers nothing to limit to
+    fireEvent.change(within(dialog).getByLabelText('Service account'), { target: { value: 's-2' } })
+    expect(within(dialog).queryByText('Choose at least one permission')).toBeNull()
+    expect(perms().checked).toBe(false)
+    expect(perms().disabled).toBe(true)
+    expect(within(dialog).getByText('This account holds no permissions to choose from.')).toBeTruthy()
+  })
+
+  it('keeps key access readable when area names cannot be loaded', async () => {
+    resetAll(['admin.users', 'admin.service_accounts'])
+    api.areasApi.list.mockRejectedValue(new Error('down'))
+    api.adminApi.apiKeys.mockResolvedValue(keyPage([{ id: 'k-2', name: 'narrow', prefix: 'narr2222', area_ids: ['55555555-0000'] }]))
+    renderRoute(<AllApiKeysPage />)
+    expect(await screen.findByText('Area 55555555')).toBeTruthy()
+  })
+
+  it('refuses a key that works nowhere or is limited to nothing', async () => {
+    await open()
+    await screen.findByText('csk_erp11111_…')
+    api.adminApi.users.list.mockResolvedValue([makeUser({ id: 's-1', kind: 'service', name: 'ERP', effective_permissions: ['crews.view'] })])
+    fireEvent.click(screen.getByRole('button', { name: 'New service account key' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'x' } })
+    fireEvent.change(within(dialog).getByLabelText('Service account'), { target: { value: 's-1' } })
+    fireEvent.click(within(dialog).getByLabelText('REST API'))
+    fireEvent.click(within(dialog).getByLabelText('MCP'))
+    fireEvent.click(within(within(dialog).getByRole('group', { name: 'Permissions' })).getByLabelText('Only these'))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create key' }))
+    expect(within(dialog).getByText(/REST API, MCP or both/)).toBeTruthy()
+    expect(within(dialog).getByText('Choose at least one permission')).toBeTruthy()
+    expect(api.adminApi.users.createApiKey).not.toHaveBeenCalled()
+  })
+
   it('picks an active service account, shows the secret once and reloads the first page', async () => {
     await open()
     await screen.findByText('csk_erp11111_…')
@@ -182,7 +276,7 @@ describe('issuing a service account key', () => {
     const loads = api.adminApi.apiKeys.mock.calls.length
     fireEvent.change(within(dialog).getByLabelText('Service account'), { target: { value: 's-1' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create key' }))
-    await waitFor(() => expect(api.adminApi.users.createApiKey).toHaveBeenCalledWith('s-1', { name: 'nightly', expires_at: null }))
+    await waitFor(() => expect(api.adminApi.users.createApiKey).toHaveBeenCalledWith('s-1', { name: 'nightly', expires_at: null, allow_api: true, allow_mcp: true, permissions: null, area_ids: null }))
     const secret = await screen.findByRole('dialog')
     expect(within(secret).getByText('csk_new44444_SECRET')).toBeTruthy()
     fireEvent.click(within(secret).getByRole('button', { name: 'I have saved it' }))

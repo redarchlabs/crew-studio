@@ -12,7 +12,7 @@ keywords: api keys, all keys, revoke, audit keys, service account key, personal 
 
 ## What the list shows
 
-Each row shows the key's **Name** and prefix, the **Account** it belongs to (a person or a service account), its **Status** (**Active**, **Expired** or **Revoked**), when and by whom it was **Created**, when it **Expires**, and when it was **Last used**.
+Each row shows the key's **Name** and prefix, the **Account** it belongs to (a person or a service account), its **Access** (where it works, **API and MCP**, **API only** or **MCP only**, and whether it keeps all of its account's permissions and areas or only some), its **Status** (**Active**, **Expired** or **Revoked**), when and by whom it was **Created**, when it **Expires**, and when it was **Last used**.
 
 Active keys come first, then the newest. The list shows 50 keys a page; use the arrows below it to move between pages.
 
@@ -32,7 +32,7 @@ Some rows show a faint **Cannot revoke** instead. That key belongs to someone wh
 
 ## New service account keys
 
-**New service account key** lets you pick a service account and create a key for it, using the same window as on the service account's own page. The key is shown once. See [Service accounts](/help/admin-service-accounts) for how to replace a key without downtime.
+**New service account key** lets you pick a service account and create a key for it, using the same window as on the service account's own page. Once you pick the account, you can limit the key to the REST API or MCP and to some of the account's permissions and areas; only what the account holds is offered. The key is shown once. See [Service accounts](/help/admin-service-accounts) for how to replace a key without downtime.
 
 Administrators can never create a personal key for someone else: people create their own on **My API keys**.
 

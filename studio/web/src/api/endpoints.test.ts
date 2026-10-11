@@ -23,6 +23,7 @@ afterEach(() => vi.unstubAllGlobals())
 
 const body = { a: 1 } as never
 const signal = new AbortController().signal
+const LIMITS = { allow_api: true, allow_mcp: false, permissions: ['crews.view' as const], area_ids: null }
 
 const CALLS: Call[] = [
   // generic CRUD (llms/pricing/agents/tasks/roles/crews/schedules/triggers share the shape)
@@ -83,10 +84,10 @@ const CALLS: Call[] = [
   { name: 'adminApi.users.revokeSessions', run: () => adminApi.users.revokeSessions('u1'), method: 'POST', url: '/admin/users/u1/sessions/revoke', body: {} },
   { name: 'adminApi.apiKeys', run: () => adminApi.apiKeys({ limit: 50, offset: 0, q: 'erp', kind: 'service', status: 'active' }), method: 'GET', url: '/admin/api-keys?limit=50&offset=0&q=erp&kind=service&status=active' },
   { name: 'accountApi.apiKeys', run: () => accountApi.apiKeys({ limit: 20, offset: 20 }), method: 'GET', url: '/account/api-keys?limit=20&offset=20' },
-  { name: 'accountApi.createApiKey', run: () => accountApi.createApiKey({ name: 'k', expires_at: null }), method: 'POST', url: '/account/api-keys', body: { name: 'k', expires_at: null } },
+  { name: 'accountApi.createApiKey', run: () => accountApi.createApiKey({ name: 'k', expires_at: null, ...LIMITS }), method: 'POST', url: '/account/api-keys', body: { name: 'k', expires_at: null, ...LIMITS } },
   { name: 'accountApi.revokeApiKey', run: () => accountApi.revokeApiKey('k1'), method: 'DELETE', url: '/account/api-keys/k1' },
   { name: 'adminApi.users.apiKeys', run: () => adminApi.users.apiKeys('u1', { limit: 20, offset: 0 }), method: 'GET', url: '/admin/users/u1/api-keys?limit=20&offset=0' },
-  { name: 'adminApi.users.createApiKey', run: () => adminApi.users.createApiKey('u1', { name: 'k', expires_at: null }), method: 'POST', url: '/admin/users/u1/api-keys', body: { name: 'k', expires_at: null } },
+  { name: 'adminApi.users.createApiKey', run: () => adminApi.users.createApiKey('u1', { name: 'k', expires_at: null, ...LIMITS }), method: 'POST', url: '/admin/users/u1/api-keys', body: { name: 'k', expires_at: null, ...LIMITS } },
   { name: 'adminApi.users.revokeApiKey', run: () => adminApi.users.revokeApiKey('u1', 'k1'), method: 'DELETE', url: '/admin/users/u1/api-keys/k1' },
   { name: 'adminApi.users.signingSecret', run: () => adminApi.users.signingSecret('u1'), method: 'GET', url: '/admin/users/u1/signing-secret' },
   { name: 'adminApi.users.rotateSigningSecret', run: () => adminApi.users.rotateSigningSecret('u1'), method: 'POST', url: '/admin/users/u1/signing-secret/rotate', body: {} },

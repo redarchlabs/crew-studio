@@ -65,7 +65,7 @@ func (s *Server) installPMO(w http.ResponseWriter, r *http.Request) {
 	var out store.PMOInstalled
 	if err == nil {
 		// Schedules run as whoever installs the PMO, like any schedule someone saves
-		ctx := store.WithActor(r.Context(), store.Actor{ID: p.UserID, Name: p.Name})
+		ctx := store.WithActor(r.Context(), store.Actor{ID: p.UserID, Name: p.Name, APIKeyID: p.APIKeyID})
 		out, err = svc.Install(ctx, plan)
 	}
 	// Everything the PMO makes is named after it, so a taken name is a problem with the Name field

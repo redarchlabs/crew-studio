@@ -7,33 +7,56 @@ import { SelectField, TextField, type SelectOption } from '../../components/Fiel
 import { Modal } from '../../components/Modal'
 import { CopyButton } from '../../components/misc'
 import { notifyError } from '../../lib/notify'
+import { ApiKeyLimitsFields } from './ApiKeyLimitsFields'
+import { limitsProblems, OPEN_LIMITS, toLimits, type KeyScope, type LimitsDraft } from './apiKeyLimits'
 import { expiresAtFromDate, maskedKey, newKeyProblems } from './apiKeys'
+
+/** A service account to pick in the form, with what it holds */
+export type KeyAccountOption = SelectOption & { scope: KeyScope }
 
 type NewKeyModalProps = {
   /** accountId is the chosen service account when `accounts` is given, else "" */
   create: (body: NewApiKeyInput, accountId: string) => Promise<NewApiKey>
   onClose: () => void
   onCreated: (created: NewApiKey) => void
-  /** When given, the key's service account is picked in the form */
-  accounts?: readonly SelectOption[]
+  /** When given, the key's service account is picked in the form, and the key's limits are chosen within it */
+  accounts?: readonly KeyAccountOption[]
+  /** What the key's account holds, when it is not picked in the form */
+  scope?: KeyScope
+  who: 'you' | 'account'
 }
 
-/** Asks for a key's name, expiry and (optionally) account, and creates it. */
-export function NewKeyModal({ create, onClose, onCreated, accounts }: NewKeyModalProps) {
+type NewKeyErrors = { account?: string; name?: string; expires?: string; channels?: string; permissions?: string; areas?: string }
+
+/** Asks for a key's name, expiry, limits and (optionally) account, and creates it. */
+export function NewKeyModal({ create, onClose, onCreated, accounts, scope, who }: NewKeyModalProps) {
   const [accountId, setAccountId] = useState('')
   const [name, setName] = useState('')
   const [date, setDate] = useState('')
-  const [errors, setErrors] = useState<{ account?: string; name?: string; expires?: string }>({})
+  const [limits, setLimits] = useState<LimitsDraft>(OPEN_LIMITS)
+  const [errors, setErrors] = useState<NewKeyErrors>({})
   const [busy, setBusy] = useState(false)
+  const keyScope = accounts ? accounts.find((a) => a.value === accountId)?.scope : scope
+
+  const pickAccount = (id: string) => {
+    setAccountId(id)
+    // Choices made for another account may not fit this one
+    setLimits(OPEN_LIMITS)
+    setErrors(({ name: nameError, expires }) => ({ name: nameError, expires }))
+  }
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
-    const problems = { ...newKeyProblems(name, date), ...(accounts && !accountId ? { account: 'Choose the service account the key is for' } : {}) }
+    const problems: NewKeyErrors = {
+      ...newKeyProblems(name, date),
+      ...limitsProblems(limits),
+      ...(accounts && !accountId ? { account: 'Choose the service account the key is for' } : {}),
+    }
     setErrors(problems)
-    if (Object.keys(problems).length > 0) return
+    if (Object.keys(problems).length > 0 || !keyScope) return
     setBusy(true)
     try {
-      onCreated(await create({ name: name.trim(), expires_at: expiresAtFromDate(date) }, accountId))
+      onCreated(await create({ name: name.trim(), expires_at: expiresAtFromDate(date), ...toLimits(limits, keyScope) }, accountId))
     } catch (err) {
       notifyError('Could not create the key', err)
       setBusy(false)
@@ -56,7 +79,7 @@ export function NewKeyModal({ create, onClose, onCreated, accounts }: NewKeyModa
           <SelectField
             label="Service account"
             value={accountId}
-            onChange={setAccountId}
+            onChange={pickAccount}
             options={[{ value: '', label: accounts.length ? 'Choose…' : 'No active service accounts' }, ...accounts]}
             error={errors.account}
             hint="The key acts as this account, with its roles and areas. People create their own keys under My API keys."
@@ -64,6 +87,7 @@ export function NewKeyModal({ create, onClose, onCreated, accounts }: NewKeyModa
         )}
         <TextField label="Name" value={name} onChange={setName} error={errors.name} placeholder="ERP integration" />
         <TextField label="Expires (optional)" type="date" value={date} onChange={setDate} error={errors.expires} hint="Leave empty for a key that does not expire. It stops working at the end of that day." />
+        {keyScope && <ApiKeyLimitsFields value={limits} onChange={setLimits} scope={keyScope} who={who} errors={errors} />}
       </form>
     </Modal>
   )

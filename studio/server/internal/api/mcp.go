@@ -52,10 +52,22 @@ func (s *Server) mountMCP(r chi.Router) {
 		refuseBatches,
 		s.limitByIP,
 		s.authenticate,
+		keyMayUseMCP,
 		s.rateLimit,
 		mcpauth.RequireBearerToken(s.mcpVerify, nil),
 		middleware.Timeout(requestTimeout),
 	).Handle("/mcp", handler)
+}
+
+// keyMayUseMCP refuses API keys that are limited to the REST API.
+func keyMayUseMCP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := principal(r); p != nil && p.Via == auth.ViaAPIKey && p.NoMCP {
+			fail(w, http.StatusForbidden, "forbidden", "This API key works only with the REST API (/api), not MCP.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func limitBody(next http.Handler) http.Handler {
@@ -148,7 +160,7 @@ func (d mcpDispatcher) Do(ctx context.Context, ti *mcpauth.TokenInfo, in mcpserv
 	// (treating this as a sub-route of /mcp) instead of routing the new path
 	ctx = context.WithValue(ctx, chi.RouteCtxKey, (*chi.Context)(nil))
 	ctx = auth.WithPrincipal(ctx, c.principal)
-	ctx = store.WithActor(ctx, store.Actor{ID: c.principal.UserID, Name: c.principal.Name})
+	ctx = store.WithActor(ctx, store.Actor{ID: c.principal.UserID, Name: c.principal.Name, APIKeyID: c.principal.APIKeyID})
 	req, err := http.NewRequestWithContext(ctx, in.Method, in.Path, bytes.NewReader(in.Body))
 	if err != nil {
 		return 0, nil, fmt.Errorf("build request: %w", err)

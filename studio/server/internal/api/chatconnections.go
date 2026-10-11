@@ -52,6 +52,10 @@ func (s *Server) chatterConnectionIDs(ctx context.Context, scope store.RunScope)
 		return out, nil
 	}
 	p, err := s.store.LoadPrincipal(ctx, *run.CreatedBy)
+	if err == nil && run.APIKeyID != nil {
+		// A turn started with an API key keeps the key's limits, and loses its connections if the key stops working
+		p, err = s.store.WithKeyLimits(ctx, p, *run.APIKeyID)
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		return out, nil
 	}

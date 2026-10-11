@@ -179,27 +179,29 @@ const (
 
 // Schedule creates a work order for a crew on a cron schedule.
 type Schedule struct {
-	ID              string            `json:"id"`
-	Name            string            `json:"name"`
-	Description     string            `json:"description"`
-	CrewID          *string           `json:"crew_id"`
-	TargetName      string            `json:"target_name"`
-	Cron            string            `json:"cron"`
-	Timezone        string            `json:"timezone"`
-	Brief           string            `json:"brief"`
-	Inputs          map[string]string `json:"inputs"`
-	BudgetUSD       *float64          `json:"budget_usd"`
-	Enabled         bool              `json:"enabled"`
-	OverlapPolicy   string            `json:"overlap_policy"`
-	RunAs           *string           `json:"run_as"`
-	RunAsName       string            `json:"run_as_name"`
-	AreaIDs         []string          `json:"area_ids"`
-	NextRunAt       *time.Time        `json:"next_run_at"`
-	LastRunAt       *time.Time        `json:"last_run_at"`
-	LastWorkOrderID *string           `json:"last_work_order_id"`
-	LastError       *string           `json:"last_error"`
-	CreatedAt       time.Time         `json:"created_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Description   string            `json:"description"`
+	CrewID        *string           `json:"crew_id"`
+	TargetName    string            `json:"target_name"`
+	Cron          string            `json:"cron"`
+	Timezone      string            `json:"timezone"`
+	Brief         string            `json:"brief"`
+	Inputs        map[string]string `json:"inputs"`
+	BudgetUSD     *float64          `json:"budget_usd"`
+	Enabled       bool              `json:"enabled"`
+	OverlapPolicy string            `json:"overlap_policy"`
+	RunAs         *string           `json:"run_as"`
+	RunAsName     string            `json:"run_as_name"`
+	// RunAsKey is the API key that last saved the schedule; its runs keep that key's limits
+	RunAsKey        *string    `json:"-"`
+	AreaIDs         []string   `json:"area_ids"`
+	NextRunAt       *time.Time `json:"next_run_at"`
+	LastRunAt       *time.Time `json:"last_run_at"`
+	LastWorkOrderID *string    `json:"last_work_order_id"`
+	LastError       *string    `json:"last_error"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 	LegacyTarget
 }
 
@@ -250,14 +252,16 @@ type Trigger struct {
 	BudgetUSD      *float64          `json:"budget_usd"`
 	CallbackURL    *string           `json:"callback_url"`
 	// SigningSecret is returned only to people who can manage triggers
-	SigningSecret string     `json:"signing_secret,omitempty"`
-	RunAs         *string    `json:"run_as"`
-	RunAsName     string     `json:"run_as_name"`
-	AreaIDs       []string   `json:"area_ids"`
-	LastFiredAt   *time.Time `json:"last_fired_at"`
-	FireCount     int        `json:"fire_count"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	SigningSecret string  `json:"signing_secret,omitempty"`
+	RunAs         *string `json:"run_as"`
+	RunAsName     string  `json:"run_as_name"`
+	// RunAsKey is the API key that last saved the trigger; its runs keep that key's limits
+	RunAsKey    *string    `json:"-"`
+	AreaIDs     []string   `json:"area_ids"`
+	LastFiredAt *time.Time `json:"last_fired_at"`
+	FireCount   int        `json:"fire_count"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 	// Token is set only in the response that creates or rotates it
 	Token string `json:"token,omitempty"`
 	LegacyTarget

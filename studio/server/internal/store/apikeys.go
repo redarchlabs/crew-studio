@@ -16,11 +16,13 @@ import (
 // keys without limit.
 const MaxActiveAPIKeys = 20
 
-const apiKeyColumns = `id, user_id, name, prefix, created_at, expires_at, last_used_at, revoked_at`
+const apiKeyColumns = `id, user_id, name, prefix, created_at, expires_at, last_used_at, revoked_at,
+	allow_api, allow_mcp, permissions, area_ids::text[]`
 
 func scanAPIKey(row pgx.Row) (model.APIKey, error) {
 	var k model.APIKey
-	err := row.Scan(&k.ID, &k.UserID, &k.Name, &k.Prefix, &k.CreatedAt, &k.ExpiresAt, &k.LastUsedAt, &k.RevokedAt)
+	err := row.Scan(&k.ID, &k.UserID, &k.Name, &k.Prefix, &k.CreatedAt, &k.ExpiresAt, &k.LastUsedAt, &k.RevokedAt,
+		&k.AllowAPI, &k.AllowMCP, &k.Permissions, &k.AreaIDs)
 	return k, err
 }
 
@@ -30,17 +32,18 @@ func mayUseAPIKeys(p *auth.Principal) bool {
 	return p.Kind != auth.KindHuman || p.Can(auth.AccountAPIKeys)
 }
 
-// CreateAPIKey issues a key for a service account and returns it in full (the only time it is available).
-func (s *Store) CreateAPIKey(ctx context.Context, userID, name string, expiresAt *time.Time) (model.APIKey, string, error) {
-	return s.createAPIKey(ctx, userID, auth.KindService, name, expiresAt)
+// CreateAPIKey issues a key for a service account and returns it in full (the only time it is available). Callers
+// check that the limits ask for nothing the account lacks.
+func (s *Store) CreateAPIKey(ctx context.Context, userID, name string, expiresAt *time.Time, limits model.APIKeyLimits) (model.APIKey, string, error) {
+	return s.createAPIKey(ctx, userID, auth.KindService, name, expiresAt, limits)
 }
 
-// CreatePersonalAPIKey issues a key that acts as a person; callers check that they may hold one.
-func (s *Store) CreatePersonalAPIKey(ctx context.Context, userID, name string, expiresAt *time.Time) (model.APIKey, string, error) {
-	return s.createAPIKey(ctx, userID, auth.KindHuman, name, expiresAt)
+// CreatePersonalAPIKey issues a key that acts as a person; callers check that they may hold one, with these limits.
+func (s *Store) CreatePersonalAPIKey(ctx context.Context, userID, name string, expiresAt *time.Time, limits model.APIKeyLimits) (model.APIKey, string, error) {
+	return s.createAPIKey(ctx, userID, auth.KindHuman, name, expiresAt, limits)
 }
 
-func (s *Store) createAPIKey(ctx context.Context, userID, kind, name string, expiresAt *time.Time) (model.APIKey, string, error) {
+func (s *Store) createAPIKey(ctx context.Context, userID, kind, name string, expiresAt *time.Time, limits model.APIKeyLimits) (model.APIKey, string, error) {
 	key, prefix := auth.NewKey(auth.APIKeyPrefix)
 	actor := actorFrom(ctx)
 	var out model.APIKey
@@ -66,9 +69,10 @@ func (s *Store) createAPIKey(ctx context.Context, userID, kind, name string, exp
 		}
 		var err error
 		out, err = scanAPIKey(tx.QueryRow(ctx,
-			`INSERT INTO api_keys (user_id, name, prefix, secret_hash, created_by, expires_at)
-			 VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+apiKeyColumns,
-			userID, name, prefix, auth.HashToken(key), nullableUUID(actor.ID), expiresAt))
+			`INSERT INTO api_keys (user_id, name, prefix, secret_hash, created_by, expires_at, allow_api, allow_mcp, permissions, area_ids)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::text[]::uuid[]) RETURNING `+apiKeyColumns,
+			userID, name, prefix, auth.HashToken(key), nullableUUID(actor.ID), expiresAt,
+			limits.AllowAPI, limits.AllowMCP, limits.Permissions, limits.AreaIDs))
 		if err != nil {
 			return mapErr(err, "API key", name)
 		}
@@ -109,7 +113,7 @@ func (s *Store) ListAPIKeys(ctx context.Context, f APIKeyFilter) ([]model.Accoun
 		return nil, 0, fmt.Errorf("count api keys: %w", err)
 	}
 	rows, err := s.pool.Query(ctx, `SELECT k.id, k.user_id, k.name, k.prefix, k.created_at, k.expires_at, k.last_used_at,
-			k.revoked_at, u.name, u.kind, cb.name`+from+where+`
+			k.revoked_at, k.allow_api, k.allow_mcp, k.permissions, k.area_ids::text[], u.name, u.kind, cb.name`+from+where+`
 		ORDER BY (`+apiKeyStatus+`) = 'active' DESC, k.created_at DESC, k.id LIMIT $6 OFFSET $7`,
 		append(args, f.Limit, f.Offset)...)
 	if err != nil {
@@ -118,7 +122,7 @@ func (s *Store) ListAPIKeys(ctx context.Context, f APIKeyFilter) ([]model.Accoun
 	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (model.AccountAPIKey, error) {
 		var k model.AccountAPIKey
 		err := r.Scan(&k.ID, &k.UserID, &k.Name, &k.Prefix, &k.CreatedAt, &k.ExpiresAt, &k.LastUsedAt, &k.RevokedAt,
-			&k.UserName, &k.UserKind, &k.CreatedByName)
+			&k.AllowAPI, &k.AllowMCP, &k.Permissions, &k.AreaIDs, &k.UserName, &k.UserKind, &k.CreatedByName)
 		return k, err
 	})
 	if err != nil {
@@ -177,10 +181,11 @@ func (s *Store) APIKeyPrincipal(ctx context.Context, key string) (*auth.Principa
 	}
 	var id, userID, hash string
 	var lastUsed *time.Time
+	var limits model.APIKeyLimits
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, user_id, secret_hash, last_used_at FROM api_keys
+		`SELECT id, user_id, secret_hash, last_used_at, allow_api, allow_mcp, permissions, area_ids::text[] FROM api_keys
 		 WHERE prefix = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())`, prefix).
-		Scan(&id, &userID, &hash, &lastUsed)
+		Scan(&id, &userID, &hash, &lastUsed, &limits.AllowAPI, &limits.AllowMCP, &limits.Permissions, &limits.AreaIDs)
 	if err != nil {
 		return nil, mapErr(err, "API key", "")
 	}
@@ -199,7 +204,33 @@ func (s *Store) APIKeyPrincipal(ctx context.Context, key string) (*auth.Principa
 			return nil, fmt.Errorf("touch api key: %w", err)
 		}
 	}
+	return keyPrincipal(p, id, limits), nil
+}
+
+// WithKeyLimits returns the account limited as the API key is, for work the key set up that runs later (a schedule, a
+// trigger, a chat turn). A key that was revoked, expired or is missing, or whose account may no longer use keys, is
+// ErrNotFound: the work must then stop rather than run with the account's full access.
+func (s *Store) WithKeyLimits(ctx context.Context, account *auth.Principal, keyID string) (*auth.Principal, error) {
+	var limits model.APIKeyLimits
+	err := s.pool.QueryRow(ctx, `SELECT allow_api, allow_mcp, permissions, area_ids::text[] FROM api_keys
+		WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())`, keyID, account.UserID).
+		Scan(&limits.AllowAPI, &limits.AllowMCP, &limits.Permissions, &limits.AreaIDs)
+	if err != nil {
+		return nil, mapErr(err, "API key", "")
+	}
+	if !mayUseAPIKeys(account) {
+		return nil, ErrNotFound
+	}
+	return keyPrincipal(account, keyID, limits), nil
+}
+
+// keyPrincipal is the account as one of its keys may use it: within the key's limits, on the key's channels. The
+// account's own access is checked first (mayUseAPIKeys) and is the most the key can have.
+func keyPrincipal(account *auth.Principal, keyID string, limits model.APIKeyLimits) *auth.Principal {
+	p := account.Limited(limits.Permissions, limits.AreaIDs)
 	p.Via = auth.ViaAPIKey
-	p.APIKeyID = id
-	return p, nil
+	p.APIKeyID = keyID
+	p.NoREST = !limits.AllowAPI
+	p.NoMCP = !limits.AllowMCP
+	return p
 }

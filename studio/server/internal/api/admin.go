@@ -84,7 +84,8 @@ func (s *Server) deleteArea(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminRoutes(r chi.Router) {
 	r.Use(s.adminChangesNeedSession)
-	r.With(s.needAny(auth.AdminRoles, auth.AdminUsers, auth.AdminServiceAccounts)).Get("/permissions", s.listPermissions)
+	// The catalog is not secret; people who make their own keys need it to choose a key's permissions
+	r.With(s.needAny(auth.AdminRoles, auth.AdminUsers, auth.AdminServiceAccounts, auth.AccountAPIKeys)).Get("/permissions", s.listPermissions)
 	r.Route("/roles", func(r chi.Router) {
 		r.With(s.needAny(auth.AdminRoles, auth.AdminUsers, auth.AdminServiceAccounts)).Get("/", s.listRoles)
 		r.With(s.needAny(auth.AdminRoles, auth.AdminUsers, auth.AdminServiceAccounts)).Get("/{id}", s.getRole)

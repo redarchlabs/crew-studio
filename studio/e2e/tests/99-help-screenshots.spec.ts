@@ -136,6 +136,9 @@ test.beforeAll(async () => {
     tidyRunOutput(wo.runId, MARKET_SCAN)
     if ((await list(api, '/api/account/api-keys')).length === 0) {
       await unwrap(await api.post('/api/account/api-keys', { data: { name: 'Nightly report script', expires_at: null } }), 201)
+      // A limited key, so the Access column shows both kinds
+      await unwrap(await api.post('/api/account/api-keys', { data: { name: 'Claude Code', expires_at: null, allow_api: false,
+        permissions: ['crews.view', 'agents.view', 'tasks.view', 'runs.view'] } }), 201)
     }
     Object.assign(ids, {
       crew: lib.crewId,

@@ -348,6 +348,39 @@ test.describe('service accounts and API keys', () => {
     await expect(row(page, 'E2E Integration')).toContainText('Viewer')
   })
 
+  test('a key limited to the REST API and read-only permissions gets only those', async ({ page }) => {
+    const admin = await apiAs('admin')
+    const sa = await unwrap<{ id: string; effective_permissions: string[] }>(
+      await admin.post('/api/admin/users', { data: { kind: 'service', name: 'E2E Limited', status: 'active', all_areas: true, area_ids: [], role_ids: [],
+        permissions: ['crews.view', 'crews.edit', 'agents.view'] } }),
+      201,
+    )
+    await admin.dispose()
+    await page.goto(`/admin/service-accounts/${sa.id}`)
+    await page.getByRole('button', { name: 'New key' }).click()
+    const dialog = page.getByRole('dialog')
+    await dialog.getByLabel('Name').fill('read only')
+    await dialog.getByLabel('MCP', { exact: true }).uncheck()
+    await dialog.getByRole('group', { name: 'Permissions' }).getByLabel('Only these').check()
+    await dialog.getByRole('button', { name: 'Read only' }).click()
+    await dialog.getByRole('button', { name: 'Create key' }).click()
+    const secret = (await page.getByRole('dialog').locator('code').first().innerText()).trim()
+    await page.getByRole('dialog').getByRole('button', { name: 'I have saved it' }).click()
+
+    const keyRow = page.locator('section').filter({ has: page.getByText('API keys', { exact: true }) }).first().getByRole('row').filter({ hasText: 'read only' })
+    await expect(keyRow).toContainText('API only')
+    await expect(keyRow).toContainText('2 permissions')
+
+    const api = await apiAnon(secret)
+    const me = await unwrap<{ permissions: string[] }>(await api.get('/api/auth/me'))
+    expect(me.permissions).toEqual(['crews.view', 'agents.view'])
+    expect((await api.get('/api/crews')).status()).toBe(200)
+    expect((await api.post('/api/crews', { data: { name: 'not allowed' } })).status()).toBe(403)
+    const mcp = await api.post('/mcp', { data: { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, headers: { Accept: 'application/json, text/event-stream' } })
+    expect(mcp.status()).toBe(403)
+    await api.dispose()
+  })
+
   test('an API key needs a name', async ({ page }) => {
     const admin = await apiAs('admin')
     const sa = await unwrap<{ id: string }>(

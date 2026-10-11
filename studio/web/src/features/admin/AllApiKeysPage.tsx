@@ -5,7 +5,6 @@ import { adminApi } from '../../api/endpoints'
 import type { AccountApiKey, ApiKey, NewApiKey, UserKind } from '../../api/types'
 import { Pagination } from '../../components/Pagination'
 import { Button } from '../../components/Button'
-import type { SelectOption } from '../../components/Field'
 import { PageHeader } from '../../components/PageHeader'
 import { AsyncView, EmptyState } from '../../components/States'
 import { Chip } from '../../components/StatusBadge'
@@ -17,6 +16,9 @@ import { useAsync } from '../../lib/useAsync'
 import { NewKeyModal, SecretModal } from './apiKeyModals'
 import { accountPath, keyStatus, maskedKey, sortKeys, type KeyFilter, type KeyStatus } from './apiKeys'
 import { KeyStatusChip, RevokeKeyButton } from './ApiKeysPanel'
+import { KeyAccess, useAreaNames } from './ApiKeyLimitsFields'
+import { scopeOfUser } from './apiKeyLimits'
+import type { KeyAccountOption } from './apiKeyModals'
 
 const KIND_LABEL: Record<UserKind, string> = { human: 'Person', service: 'Service account' }
 
@@ -47,12 +49,13 @@ function KeyFilters({ search, onSearch, filter, onChange, showKind }: KeyFilters
 }
 
 function AllKeysTable({ keys, onRevoke }: { keys: readonly AccountApiKey[]; onRevoke: (key: ApiKey) => void }) {
+  const areaName = useAreaNames()
   return (
     <div className="overflow-x-auto rounded-lg border border-line bg-panel">
-      <table className="w-full min-w-[900px] text-left">
+      <table className="w-full min-w-[1080px] text-left">
         <thead className="border-b border-line">
           <tr className="eyebrow [&>th]:px-3 [&>th]:py-2 [&>th]:font-semibold">
-            <th>Name</th><th>Key</th><th>Account</th><th>Status</th><th>Created</th><th>Expires</th><th>Last used</th><th />
+            <th>Name</th><th>Key</th><th>Account</th><th>Access</th><th>Status</th><th>Created</th><th>Expires</th><th>Last used</th><th />
           </tr>
         </thead>
         <tbody>
@@ -64,6 +67,7 @@ function AllKeysTable({ keys, onRevoke }: { keys: readonly AccountApiKey[]; onRe
                 <Link to={accountPath(k)} className="hover:text-accent">{k.user_name}</Link>
                 <div><Chip tone="neutral">{KIND_LABEL[k.user_kind]}</Chip></div>
               </td>
+              <td><KeyAccess k={k} areaName={areaName} /></td>
               <td><KeyStatusChip k={k} /></td>
               <td className="whitespace-nowrap text-[12px]">
                 {dateTime(k.created_at)}
@@ -94,7 +98,7 @@ export function AllApiKeysPage() {
     (signal) => adminApi.apiKeys({ limit: PAGE_SIZE, offset, q: filter.query || undefined, kind: filter.kind || undefined, status: filter.status || undefined }, signal),
     [offset, filter.query, filter.kind, filter.status],
   )
-  const [accounts, setAccounts] = useState<SelectOption[] | null>(null)
+  const [accounts, setAccounts] = useState<KeyAccountOption[] | null>(null)
   const [created, setCreated] = useState<NewApiKey | null>(null)
   const filtering = filter.query !== '' || filter.kind !== '' || filter.status !== ''
 
@@ -117,7 +121,7 @@ export function AllApiKeysPage() {
   const startNew = async () => {
     try {
       const users = await adminApi.users.list('service')
-      setAccounts(users.filter((u) => u.status === 'active').map((u) => ({ value: u.id, label: u.name })))
+      setAccounts(users.filter((u) => u.status === 'active').map((u) => ({ value: u.id, label: u.name, scope: scopeOfUser(u) })))
     } catch (err) {
       notifyError('Could not load service accounts', err)
     }
@@ -181,7 +185,7 @@ export function AllApiKeysPage() {
         }
       </AsyncView>
       {accounts && (
-        <NewKeyModal accounts={accounts} create={(body, accountId) => adminApi.users.createApiKey(accountId, body)} onClose={() => setAccounts(null)} onCreated={onCreated} />
+        <NewKeyModal accounts={accounts} who="account" create={(body, accountId) => adminApi.users.createApiKey(accountId, body)} onClose={() => setAccounts(null)} onCreated={onCreated} />
       )}
       {created && <SecretModal created={created} onClose={() => setCreated(null)} />}
     </>

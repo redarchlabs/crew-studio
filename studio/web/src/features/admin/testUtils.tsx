@@ -126,7 +126,10 @@ export function makeArea(over: Partial<Area> = {}): Area {
 }
 
 export function makeKey(over: Partial<ApiKey> = {}): ApiKey {
-  return { id: 'k-1', user_id: 'u-1', name: 'ERP', prefix: 'abc123', created_at: TS, expires_at: null, last_used_at: null, revoked_at: null, ...over }
+  return {
+    id: 'k-1', user_id: 'u-1', name: 'ERP', prefix: 'abc123', created_at: TS, expires_at: null, last_used_at: null, revoked_at: null,
+    allow_api: true, allow_mcp: true, permissions: null, area_ids: null, ...over,
+  }
 }
 
 /** A key as the list endpoints return it: with its account and whether you may revoke it. */

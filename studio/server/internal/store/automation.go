@@ -23,14 +23,14 @@ const targetJoins = ` JOIN crews c ON c.id = x.crew_id`
 // Schedules
 
 const scheduleSelect = `SELECT x.id, x.name, x.description, x.crew_id, c.name,
-	x.cron, x.timezone, x.brief, x.inputs, x.budget_usd, x.enabled, x.overlap_policy, x.run_as, x.run_as_name,
+	x.cron, x.timezone, x.brief, x.inputs, x.budget_usd, x.enabled, x.overlap_policy, x.run_as, x.run_as_name, x.run_as_key::text,
 	` + targetAreas + `, x.next_run_at, x.last_run_at, x.last_work_order_id, x.last_error, x.created_at, x.updated_at
 	FROM schedules x` + targetJoins
 
 func scanSchedule(row pgx.Row) (model.Schedule, error) {
 	var s model.Schedule
 	err := row.Scan(&s.ID, &s.Name, &s.Description, &s.CrewID, &s.TargetName, &s.Cron,
-		&s.Timezone, &s.Brief, &s.Inputs, &s.BudgetUSD, &s.Enabled, &s.OverlapPolicy, &s.RunAs, &s.RunAsName, &s.AreaIDs,
+		&s.Timezone, &s.Brief, &s.Inputs, &s.BudgetUSD, &s.Enabled, &s.OverlapPolicy, &s.RunAs, &s.RunAsName, &s.RunAsKey, &s.AreaIDs,
 		&s.NextRunAt, &s.LastRunAt, &s.LastWorkOrderID, &s.LastError, &s.CreatedAt, &s.UpdatedAt)
 	if s.Inputs == nil {
 		s.Inputs = map[string]string{}
@@ -75,10 +75,10 @@ func (s *Store) SaveSchedule(ctx context.Context, id string, in model.Schedule, 
 			action = "create"
 			err := tx.QueryRow(ctx,
 				`INSERT INTO schedules (name, description, crew_id, cron, timezone, brief, inputs, budget_usd,
-				 enabled, overlap_policy, run_as, run_as_name, next_run_at)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
+				 enabled, overlap_policy, run_as, run_as_name, next_run_at, run_as_key)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id`,
 				in.Name, in.Description, in.CrewID, in.Cron, in.Timezone, in.Brief, inputs, in.BudgetUSD,
-				in.Enabled, in.OverlapPolicy, nullableUUID(actor.ID), actor.Name, nextRunAt).Scan(&id)
+				in.Enabled, in.OverlapPolicy, nullableUUID(actor.ID), actor.Name, nextRunAt, nullableUUID(actor.APIKeyID)).Scan(&id)
 			if err != nil {
 				return mapErr(err, "schedule", in.Name)
 			}
@@ -86,9 +86,9 @@ func (s *Store) SaveSchedule(ctx context.Context, id string, in model.Schedule, 
 			tag, err := tx.Exec(ctx,
 				`UPDATE schedules SET name = $2, description = $3, crew_id = $4, cron = $5,
 				 timezone = $6, brief = $7, inputs = $8, budget_usd = $9, enabled = $10, overlap_policy = $11, run_as = $12,
-				 run_as_name = $13, next_run_at = $14, last_error = NULL, updated_at = now() WHERE id = $1`,
+				 run_as_name = $13, next_run_at = $14, run_as_key = $15, last_error = NULL, updated_at = now() WHERE id = $1`,
 				id, in.Name, in.Description, in.CrewID, in.Cron, in.Timezone, in.Brief, inputs,
-				in.BudgetUSD, in.Enabled, in.OverlapPolicy, nullableUUID(actor.ID), actor.Name, nextRunAt)
+				in.BudgetUSD, in.Enabled, in.OverlapPolicy, nullableUUID(actor.ID), actor.Name, nextRunAt, nullableUUID(actor.APIKeyID))
 			if err != nil {
 				return mapErr(err, "schedule", in.Name)
 			}
@@ -159,14 +159,14 @@ func (s *Store) RecordScheduleOutcome(ctx context.Context, id string, workOrderI
 
 const triggerSelect = `SELECT x.id, x.name, x.description, x.crew_id, c.name,
 	x.enabled, x.token_prefix, x.input_map, x.brief, x.include_payload, x.budget_usd, x.callback_url, x.signing_secret,
-	x.run_as, x.run_as_name, ` + targetAreas + `, x.last_fired_at, x.fire_count, x.created_at, x.updated_at
+	x.run_as, x.run_as_name, x.run_as_key::text, ` + targetAreas + `, x.last_fired_at, x.fire_count, x.created_at, x.updated_at
 	FROM triggers x` + targetJoins
 
 func scanTrigger(row pgx.Row) (model.Trigger, error) {
 	var t model.Trigger
 	err := row.Scan(&t.ID, &t.Name, &t.Description, &t.CrewID, &t.TargetName, &t.Enabled,
 		&t.TokenPrefix, &t.InputMap, &t.Brief, &t.IncludePayload, &t.BudgetUSD, &t.CallbackURL, &t.SigningSecret,
-		&t.RunAs, &t.RunAsName, &t.AreaIDs, &t.LastFiredAt, &t.FireCount, &t.CreatedAt, &t.UpdatedAt)
+		&t.RunAs, &t.RunAsName, &t.RunAsKey, &t.AreaIDs, &t.LastFiredAt, &t.FireCount, &t.CreatedAt, &t.UpdatedAt)
 	if t.InputMap == nil {
 		t.InputMap = map[string]string{}
 	}
@@ -220,10 +220,11 @@ func (s *Store) SaveTrigger(ctx context.Context, id string, in model.Trigger) (m
 			token, prefix = auth.NewKey(auth.TriggerPrefix)
 			err := tx.QueryRow(ctx,
 				`INSERT INTO triggers (name, description, crew_id, enabled, token_prefix, token_hash, input_map,
-				 brief, include_payload, budget_usd, callback_url, signing_secret, run_as, run_as_name)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id`,
+				 brief, include_payload, budget_usd, callback_url, signing_secret, run_as, run_as_name, run_as_key)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id`,
 				in.Name, in.Description, in.CrewID, in.Enabled, prefix, auth.HashToken(token), inputMap,
-				in.Brief, in.IncludePayload, in.BudgetUSD, in.CallbackURL, auth.RandomToken(32), nullableUUID(actor.ID), actor.Name).
+				in.Brief, in.IncludePayload, in.BudgetUSD, in.CallbackURL, auth.RandomToken(32), nullableUUID(actor.ID), actor.Name,
+				nullableUUID(actor.APIKeyID)).
 				Scan(&id)
 			if err != nil {
 				return mapErr(err, "trigger", in.Name)
@@ -232,9 +233,9 @@ func (s *Store) SaveTrigger(ctx context.Context, id string, in model.Trigger) (m
 			tag, err := tx.Exec(ctx,
 				`UPDATE triggers SET name = $2, description = $3, crew_id = $4, enabled = $5,
 				 input_map = $6, brief = $7, include_payload = $8, budget_usd = $9, callback_url = $10, run_as = $11,
-				 run_as_name = $12, updated_at = now() WHERE id = $1`,
+				 run_as_name = $12, run_as_key = $13, updated_at = now() WHERE id = $1`,
 				id, in.Name, in.Description, in.CrewID, in.Enabled, inputMap, in.Brief,
-				in.IncludePayload, in.BudgetUSD, in.CallbackURL, nullableUUID(actor.ID), actor.Name)
+				in.IncludePayload, in.BudgetUSD, in.CallbackURL, nullableUUID(actor.ID), actor.Name, nullableUUID(actor.APIKeyID))
 			if err != nil {
 				return mapErr(err, "trigger", in.Name)
 			}

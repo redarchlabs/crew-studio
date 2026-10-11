@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -36,6 +37,18 @@ func (s *Server) sessionOnly(next http.Handler) http.Handler {
 	})
 }
 
+// keyMayUseREST refuses API keys that are limited to MCP. MCP tool calls reach the handlers another way, so this
+// only guards /api.
+func (s *Server) keyMayUseREST(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := principal(r); p != nil && p.Via == auth.ViaAPIKey && p.NoREST {
+			fail(w, http.StatusForbidden, "forbidden", "This API key works only with MCP (/mcp), not the REST API.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // adminChangesNeedSession applies sessionOnly to every admin request except reads.
 func (s *Server) adminChangesNeedSession(next http.Handler) http.Handler {
 	guarded := s.sessionOnly(next)
@@ -51,6 +64,32 @@ func (s *Server) adminChangesNeedSession(next http.Handler) http.Handler {
 type newKeyRequest struct {
 	Name      string     `json:"name"`
 	ExpiresAt *time.Time `json:"expires_at"`
+	// Left out, a key works on both channels with everything its account holds
+	AllowAPI    *bool    `json:"allow_api"`
+	AllowMCP    *bool    `json:"allow_mcp"`
+	Permissions []string `json:"permissions"`
+	AreaIDs     []string `json:"area_ids"`
+}
+
+// keyAccount is what the key's account holds: the most a key's limits may ask for. name and possessive refer to
+// the account in messages ("you" and "your" for your own keys).
+type keyAccount struct {
+	permissions      map[string]bool
+	allAreas         bool
+	areaIDs          []string
+	name, possessive string
+}
+
+func accountOfPrincipal(p *auth.Principal) keyAccount {
+	return keyAccount{permissions: p.Permissions, allAreas: p.AllAreas, areaIDs: p.AreaIDs, name: "you", possessive: "your"}
+}
+
+func accountOfUser(u model.User) keyAccount {
+	perms := map[string]bool{}
+	for _, k := range u.EffectivePermissions {
+		perms[k] = true
+	}
+	return keyAccount{permissions: perms, allAreas: u.AllAreas, areaIDs: u.AreaIDs, name: "this account", possessive: "this account's"}
 }
 
 type newKeyResponse struct {
@@ -117,6 +156,7 @@ func (s *Server) auditKey(r *http.Request, action string, key model.APIKey, owne
 	s.audit(r, action, p.UserID, p.Name, map[string]any{
 		"key_id": key.ID, "key_name": key.Name, "prefix": key.Prefix,
 		"account_id": owner.ID, "account_name": owner.Name, "account_kind": owner.Kind,
+		"allow_api": key.AllowAPI, "allow_mcp": key.AllowMCP, "permissions": key.Permissions, "area_ids": key.AreaIDs,
 	})
 }
 
@@ -125,11 +165,11 @@ func self(p *auth.Principal) model.User {
 	return model.User{ID: p.UserID, Name: p.Name, Kind: p.Kind}
 }
 
-// decodeNewKey reads and checks a request for a key, answering 422 itself when it is not valid.
-func (s *Server) decodeNewKey(w http.ResponseWriter, r *http.Request) (newKeyRequest, bool) {
+// decodeNewKey reads and checks a request for a key of this account, answering 422 itself when it is not valid.
+func (s *Server) decodeNewKey(w http.ResponseWriter, r *http.Request, account keyAccount) (newKeyRequest, model.APIKeyLimits, bool) {
 	var req newKeyRequest
 	if !decode(w, r, &req) {
-		return req, false
+		return req, model.APIKeyLimits{}, false
 	}
 	req.Name = strings.TrimSpace(req.Name)
 	var problems []string
@@ -139,11 +179,88 @@ func (s *Server) decodeNewKey(w http.ResponseWriter, r *http.Request) (newKeyReq
 	if req.ExpiresAt != nil && !req.ExpiresAt.After(time.Now()) {
 		problems = append(problems, "expires_at: must be in the future")
 	}
+	limits, limitProblems, err := s.keyLimits(r.Context(), req, account)
+	if err != nil {
+		failErr(w, r, s.log, err)
+		return req, limits, false
+	}
+	problems = append(problems, limitProblems...)
 	if len(problems) > 0 {
 		failErr(w, r, s.log, invalid(problems...))
-		return req, false
+		return req, limits, false
 	}
-	return req, true
+	return req, limits, true
+}
+
+// keyLimits checks the limits a request asks for. A key may be given only permissions and areas its account holds
+// now; it is checked against the account again on every request, so it never outgrows it later either.
+func (s *Server) keyLimits(ctx context.Context, req newKeyRequest, account keyAccount) (model.APIKeyLimits, []string, error) {
+	limits := model.FullAccessKey()
+	if req.AllowAPI != nil {
+		limits.AllowAPI = *req.AllowAPI
+	}
+	if req.AllowMCP != nil {
+		limits.AllowMCP = *req.AllowMCP
+	}
+	var problems []string
+	if !limits.AllowAPI && !limits.AllowMCP {
+		problems = append(problems, "allow_api, allow_mcp: a key must work on the REST API, MCP or both")
+	}
+	if req.Permissions != nil {
+		limits.Permissions = []string{}
+		if len(req.Permissions) == 0 {
+			problems = append(problems, "permissions: choose at least one, or leave it out for everything "+account.name+" can do")
+		}
+		for _, key := range auth.Catalog {
+			if slices.Contains(req.Permissions, key) {
+				limits.Permissions = append(limits.Permissions, key)
+			}
+		}
+		for _, key := range req.Permissions {
+			switch {
+			case !auth.Known(key):
+				problems = append(problems, "permissions: "+key+" is not a permission")
+			case !account.permissions[key]:
+				problems = append(problems, "permissions: "+key+" is not one of "+account.possessive+" permissions, so a key cannot have it")
+			}
+		}
+	}
+	if req.AreaIDs != nil {
+		areaProblems, err := s.keyAreaProblems(ctx, req.AreaIDs, account)
+		if err != nil {
+			return limits, nil, err
+		}
+		problems = append(problems, areaProblems...)
+		limits.AreaIDs = []string{}
+		for _, id := range req.AreaIDs {
+			if !slices.Contains(limits.AreaIDs, id) {
+				limits.AreaIDs = append(limits.AreaIDs, id)
+			}
+		}
+	}
+	return limits, problems, nil
+}
+
+// keyAreaProblems says which requested areas a key of the account cannot be limited to.
+func (s *Server) keyAreaProblems(ctx context.Context, areaIDs []string, account keyAccount) ([]string, error) {
+	if len(areaIDs) == 0 {
+		return []string{"area_ids: choose at least one, or leave it out for all of " + account.possessive + " areas"}, nil
+	}
+	areas, err := s.store.ListAreas(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var problems []string
+	for _, id := range areaIDs {
+		exists := slices.ContainsFunc(areas, func(a model.Area) bool { return a.ID == id })
+		switch {
+		case !uuidPattern.MatchString(id) || !exists:
+			problems = append(problems, "area_ids: "+id+" is not a functional area")
+		case !account.allAreas && !slices.Contains(account.areaIDs, id):
+			problems = append(problems, "area_ids: "+id+" is not one of "+account.possessive+" areas, so a key cannot be limited to it")
+		}
+	}
+	return problems, nil
 }
 
 // Personal keys
@@ -159,11 +276,11 @@ func (s *Server) listMyAPIKeys(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createMyAPIKey(w http.ResponseWriter, r *http.Request) {
 	p := principal(r)
-	req, valid := s.decodeNewKey(w, r)
+	req, limits, valid := s.decodeNewKey(w, r, accountOfPrincipal(p))
 	if !valid {
 		return
 	}
-	key, secret, err := s.store.CreatePersonalAPIKey(r.Context(), p.UserID, req.Name, req.ExpiresAt)
+	key, secret, err := s.store.CreatePersonalAPIKey(r.Context(), p.UserID, req.Name, req.ExpiresAt, limits)
 	if err != nil {
 		failErr(w, r, s.log, err)
 		return
@@ -242,11 +359,11 @@ func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		return
 	}
-	req, valid := s.decodeNewKey(w, r)
+	req, limits, valid := s.decodeNewKey(w, r, accountOfUser(u))
 	if !valid {
 		return
 	}
-	key, secret, err := s.store.CreateAPIKey(r.Context(), u.ID, req.Name, req.ExpiresAt)
+	key, secret, err := s.store.CreateAPIKey(r.Context(), u.ID, req.Name, req.ExpiresAt, limits)
 	if err != nil {
 		failErr(w, r, s.log, err)
 		return

@@ -89,7 +89,22 @@ type APIKey struct {
 	ExpiresAt  *time.Time `json:"expires_at"`
 	LastUsedAt *time.Time `json:"last_used_at"`
 	RevokedAt  *time.Time `json:"revoked_at"`
+	APIKeyLimits
 }
+
+// APIKeyLimits narrow what a key may do below its account. The key gets only what both allow on each request.
+type APIKeyLimits struct {
+	// AllowAPI and AllowMCP say where the key works: the REST API (/api), the MCP endpoint (/mcp), or both
+	AllowAPI bool `json:"allow_api"`
+	AllowMCP bool `json:"allow_mcp"`
+	// Permissions is nil for everything the account holds
+	Permissions []string `json:"permissions"`
+	// AreaIDs is nil for every functional area the account is in
+	AreaIDs []string `json:"area_ids"`
+}
+
+// FullAccessKey is the limits of a key that may do everything its account can, on both channels.
+func FullAccessKey() APIKeyLimits { return APIKeyLimits{AllowAPI: true, AllowMCP: true} }
 
 // AccountAPIKey is a key with the account it belongs to, as key lists return it.
 type AccountAPIKey struct {

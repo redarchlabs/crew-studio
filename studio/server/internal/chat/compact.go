@@ -93,7 +93,7 @@ func (s *Service) compact(ctx context.Context, p *auth.Principal, conv model.Con
 	started, err := s.store.CreateChatTurn(ctx, store.ChatTurn{
 		ConversationID: conv.ID, Compact: true, HistoryThrough: through, Spec: spec, DailyBudgetUSD: settings.DailyBudgetUSD,
 		PersonBudgetUSD: settings.PersonDailyBudgetUSD, MinBudgetUSD: MinTurnBudgetUSD,
-		Meta: store.RunMeta{AreaIDs: base.Crew.AreaIDs, CreatedBy: p.UserID, CreatedByName: p.Name, TriggerType: trigger,
+		Meta: store.RunMeta{AreaIDs: base.Crew.AreaIDs, CreatedBy: p.UserID, CreatedByName: p.Name, APIKeyID: p.APIKeyID, TriggerType: trigger,
 			ChatAgentID: chatAgentID(conv)},
 	})
 	if err != nil {

@@ -29,6 +29,8 @@ func (s Scope) areaArgs() (bool, []string) {
 type Actor struct {
 	ID   string
 	Name string
+	// APIKeyID is set when the actor is using an API key, so what it sets up keeps the key's limits
+	APIKeyID string
 }
 
 type actorKey struct{}

@@ -16,12 +16,12 @@ func TestPersonalAPIKeys(t *testing.T) {
 	svc := f.service("bot", model.UserInput{})
 	ctx := WithActor(bg(), Actor{ID: pat.ID, Name: "Pat"})
 
-	_, _, err := f.s.CreatePersonalAPIKey(ctx, svc.ID, "k", nil)
+	_, _, err := f.s.CreatePersonalAPIKey(ctx, svc.ID, "k", nil, model.FullAccessKey())
 	wantConflict(t, err, "people")
-	_, _, err = f.s.CreatePersonalAPIKey(ctx, "99999999-0000-4000-8000-000000000000", "k", nil)
+	_, _, err = f.s.CreatePersonalAPIKey(ctx, "99999999-0000-4000-8000-000000000000", "k", nil, model.FullAccessKey())
 	wantNotFound(t, err)
 
-	key, secret, err := f.s.CreatePersonalAPIKey(ctx, pat.ID, "laptop", nil)
+	key, secret, err := f.s.CreatePersonalAPIKey(ctx, pat.ID, "laptop", nil, model.FullAccessKey())
 	mustOK(t, err)
 	p, err := f.s.APIKeyPrincipal(bg(), secret)
 	mustOK(t, err)
@@ -52,18 +52,18 @@ func TestAPIKeyCapPerAccount(t *testing.T) {
 	svc := f.service("bot", model.UserInput{})
 	var first model.APIKey
 	for i := range MaxActiveAPIKeys {
-		k, _, err := f.s.CreateAPIKey(bg(), svc.ID, "k", nil)
+		k, _, err := f.s.CreateAPIKey(bg(), svc.ID, "k", nil, model.FullAccessKey())
 		mustOK(t, err)
 		if i == 0 {
 			first = k
 		}
 	}
-	_, _, err := f.s.CreateAPIKey(bg(), svc.ID, "one too many", nil)
+	_, _, err := f.s.CreateAPIKey(bg(), svc.ID, "one too many", nil, model.FullAccessKey())
 	wantConflict(t, err, "revoke one")
 	// Revoked keys do not count
 	_, _, err = f.s.RevokeAPIKey(bg(), svc.ID, first.ID)
 	mustOK(t, err)
-	_, _, err = f.s.CreateAPIKey(bg(), svc.ID, "replacement", nil)
+	_, _, err = f.s.CreateAPIKey(bg(), svc.ID, "replacement", nil, model.FullAccessKey())
 	mustOK(t, err)
 }
 
@@ -73,16 +73,16 @@ func TestListAPIKeys(t *testing.T) {
 	pat := f.human("pat@example.com", model.UserInput{Name: "Pat Lee", Permissions: []string{auth.AccountAPIKeys}})
 	svc := f.service("ERP", model.UserInput{})
 	ctx := WithActor(bg(), Actor{ID: adminID, Name: "Admin"})
-	sk, _, err := f.s.CreateAPIKey(ctx, svc.ID, "prod", nil)
+	sk, _, err := f.s.CreateAPIKey(ctx, svc.ID, "prod", nil, model.FullAccessKey())
 	mustOK(t, err)
-	gone, _, err := f.s.CreateAPIKey(ctx, svc.ID, "old_100%", nil)
+	gone, _, err := f.s.CreateAPIKey(ctx, svc.ID, "old_100%", nil, model.FullAccessKey())
 	mustOK(t, err)
 	_, _, err = f.s.RevokeAPIKey(ctx, svc.ID, gone.ID)
 	mustOK(t, err)
 	past := time.Now().Add(-time.Minute)
-	expired, _, err := f.s.CreateAPIKey(ctx, svc.ID, "stale", &past)
+	expired, _, err := f.s.CreateAPIKey(ctx, svc.ID, "stale", &past, model.FullAccessKey())
 	mustOK(t, err)
-	pk, _, err := f.s.CreatePersonalAPIKey(WithActor(bg(), Actor{ID: pat.ID, Name: "Pat Lee"}), pat.ID, "laptop", nil)
+	pk, _, err := f.s.CreatePersonalAPIKey(WithActor(bg(), Actor{ID: pat.ID, Name: "Pat Lee"}), pat.ID, "laptop", nil, model.FullAccessKey())
 	mustOK(t, err)
 
 	both := []string{auth.KindHuman, auth.KindService}

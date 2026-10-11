@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"maps"
 	"slices"
 )
 
@@ -27,6 +28,9 @@ type Principal struct {
 	Permissions map[string]bool
 	// APIKeyID is set when the request used an API key
 	APIKeyID string
+	// NoREST and NoMCP are set when the API key may not be used on /api or on /mcp
+	NoREST bool
+	NoMCP  bool
 	// SessionHash identifies the session for sign-out
 	SessionHash string
 }
@@ -56,6 +60,33 @@ func (p *Principal) SeesAreas(areaIDs []string) bool {
 // HasArea reports whether the principal may place items in this area.
 func (p *Principal) HasArea(areaID string) bool {
 	return p != nil && (p.AllAreas || slices.Contains(p.AreaIDs, areaID))
+}
+
+// Limited returns a copy that holds only what both the principal and the limits allow, as an API key with limits
+// does. A nil limit leaves that part unchanged; an area limit always ends all-areas access, so a limited key no
+// longer sees items without areas.
+func (p *Principal) Limited(permissions, areaIDs []string) *Principal {
+	out := *p
+	out.Permissions = maps.Clone(p.Permissions)
+	out.AreaIDs = slices.Clone(p.AreaIDs)
+	if permissions != nil {
+		out.Permissions = map[string]bool{}
+		for _, key := range permissions {
+			if p.Can(key) {
+				out.Permissions[key] = true
+			}
+		}
+	}
+	if areaIDs != nil {
+		out.AllAreas = false
+		out.AreaIDs = []string{}
+		for _, id := range areaIDs {
+			if p.HasArea(id) && !slices.Contains(out.AreaIDs, id) {
+				out.AreaIDs = append(out.AreaIDs, id)
+			}
+		}
+	}
+	return &out
 }
 
 // PermissionList returns the held permissions in catalog order.

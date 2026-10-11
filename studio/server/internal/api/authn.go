@@ -53,7 +53,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		ctx := auth.WithPrincipal(r.Context(), p)
-		ctx = store.WithActor(ctx, store.Actor{ID: p.UserID, Name: p.Name})
+		ctx = store.WithActor(ctx, store.Actor{ID: p.UserID, Name: p.Name, APIKeyID: p.APIKeyID})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

@@ -273,6 +273,7 @@ func (s *Server) Handler() http.Handler {
 		// Per address first (so guessing keys or tokens is throttled), then per principal
 		r.Use(s.limitByIP)
 		r.Use(s.authenticate)
+		r.Use(s.keyMayUseREST)
 		r.Use(s.rateLimit)
 
 		r.Get("/openapi.yaml", serveOpenAPI)

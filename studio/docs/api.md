@@ -37,7 +37,8 @@ Every endpoint except `/api/auth/*`, `/api/hooks/*`, `/api/openapi.yaml` and `/h
 - **API key**: `Authorization: Bearer csk_<prefix>_<secret>`. A key acts as one account: a service account (keys
   issued by an admin) or a person (personal keys they create themselves, see Account). Keys are shown once, stored
   only as a SHA-256 hash, can expire or be revoked, and each account holds at most 20 active keys. A person's keys
-  stop working while they lack `account.api_keys`, and when their account is disabled. API keys can read `/admin`
+  stop working while they lack `account.api_keys`, and when their account is disabled. A key can be limited (see
+  Key limits): it then gets only what both the key and its account allow, on each request. API keys can read `/admin`
   but not change it: admin writes and reading a signing secret need a signed-in session (`403` otherwise), so a
   stolen key cannot issue itself new credentials or accounts that outlive its revocation.
 
@@ -876,7 +877,7 @@ Personal API keys act as the signed-in person, with their permissions and areas.
 
 - `GET /account/api-keys` lists your keys as a page of `AccountAPIKey` (see Key lists). Anyone signed in may
   call it.
-- `POST /account/api-keys` body `{ name, expires_at? }` returns `{ key: APIKey, secret: "csk_..." }`; the secret is
+- `POST /account/api-keys` body `NewAPIKey` (see Key limits) returns `{ key: APIKey, secret: "csk_..." }`; the secret is
   shown once. Needs `account.api_keys` and a browser session: a request made with an API key gets `403`, so a key
   cannot create more keys. `409` when you already hold 20 active keys.
 - `DELETE /account/api-keys/{keyId}` revokes one of your keys (`404` for anyone else's).
@@ -927,12 +928,43 @@ Only for people who hold `admin.users` (local sign-in is for administrators). Ne
 
 API keys of an account (`admin.users` for people, `admin.service_accounts` for service accounts):
 `GET /admin/users/{id}/api-keys` returns a page of keys; `DELETE /admin/users/{id}/api-keys/{keyId}` revokes (you
-must hold everything the account holds). `POST` body `{ name, expires_at? }` returns
+must hold everything the account holds). `POST` body `NewAPIKey` (see Key limits) returns
 `{ key: APIKey, secret: "csk_..." }` (the secret is shown once) and works only for service accounts: admins never
 issue keys that act as a person.
 
 `GET /admin/api-keys` lists every key: people's keys with `admin.users`, service accounts' with
 `admin.service_accounts`.
+
+**Key limits.** A key may be limited when it is created, and the limits cannot be changed afterwards:
+
+```ts
+type NewAPIKey = {
+  name: string                  // at most 120 characters
+  expires_at?: string | null
+  allow_api?: boolean           // works on the REST API (/api); default true
+  allow_mcp?: boolean           // works on the MCP endpoint (/mcp); default true; at least one of the two
+  permissions?: string[] | null // some of the account's permissions; null or left out for all of them
+  area_ids?: string[] | null    // some of the account's functional areas; null or left out for all of them
+}
+
+type APIKey = {
+  id: string; user_id: string; name: string; prefix: string
+  created_at: string; expires_at: string | null; last_used_at: string | null; revoked_at: string | null
+  allow_api: boolean; allow_mcp: boolean
+  permissions: string[] | null  // null: everything the account holds
+  area_ids: string[] | null     // null: every area the account is in
+}
+```
+
+A key may be given only permissions and areas its account holds (an account with all areas may name any area that
+exists); anything else answers `422`, and so do empty lists and a key that works on neither channel. On every request
+the key gets only what both it and its account allow, so taking a permission or area from the account takes it from
+its keys too. A key limited to areas is not an all-areas principal, so it does not see items without areas. A key
+used on the channel it is not allowed answers `403`. Keys made before limits existed keep everything on both
+channels. Work a key sets up keeps the key's limits when it runs later: a schedule or trigger saved with a key runs
+within them (saving it again in the app, as the person, removes them), and an agent chat turn started with a key reads
+only the connections the limited key could. When the key is revoked or expires, or its owner loses
+`account.api_keys`, that work stops: schedules pause, triggers answer `422`, and chat turns lose their connections.
 
 **Key lists** (`/account/api-keys`, `/admin/users/{id}/api-keys`, `/admin/api-keys`) are pages (`meta.total`),
 active keys first and each group newest first. They take `limit` (default 50, at most 200), `offset`, `q` (matches
@@ -954,7 +986,8 @@ type APIKey = { id: string; user_id: string; name: string; prefix: string; creat
 ### Roles
 
 `GET /admin/roles` (`admin.roles` or `admin.users`), `POST`, `GET/PUT/DELETE /admin/roles/{id}` (`admin.roles`).
-`GET /admin/permissions` returns the catalog `{ key, feature, label, description }[]`.
+`GET /admin/permissions` returns the catalog `{ key, feature, label, description }[]`. Besides the admin
+permissions, `account.api_keys` lets you read it, to choose a personal key's permissions.
 
 ```ts
 type Role = { id: string; name: string; description: string; builtin: boolean; permissions: string[];

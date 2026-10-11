@@ -328,6 +328,20 @@ components:
         started_at: { type: [string, "null"], format: date-time }
         finished_at: { type: [string, "null"], format: date-time }
         open_question_id: { type: [string, "null"], format: uuid, description: "The question its run is waiting on you to answer, if any" }
+    NewAPIKey:
+      type: object
+      required: [name]
+      description: >-
+        Limits are optional. Left out, a key works on both channels with everything its account holds. A key may be
+        given only permissions and areas its account holds (422 otherwise), and on every request it gets only what
+        both the key and the account allow, so taking access from the account takes it from its keys too.
+      properties:
+        name: { type: string, maxLength: 120 }
+        expires_at: { type: [string, "null"], format: date-time }
+        allow_api: { type: boolean, default: true, description: "Works on the REST API (/api)" }
+        allow_mcp: { type: boolean, default: true, description: "Works on the MCP endpoint (/mcp); at least one of the two" }
+        permissions: { type: [array, "null"], minItems: 1, items: { type: string }, description: "Some of the account's permissions; null or left out for all of them" }
+        area_ids: { type: [array, "null"], minItems: 1, items: { type: string, format: uuid }, description: "Some of the account's functional areas; null or left out for all of them" }
     Entity:
       type: object
       additionalProperties: true
@@ -728,7 +742,7 @@ paths:
       description: >-
         Needs a signed-in session: a request made with an API key is refused, so a key cannot create more keys.
         An account holds at most 20 active keys.
-      requestBody: { content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string, maxLength: 120 }, expires_at: { type: [string, "null"], format: date-time } } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/NewAPIKey" } } } }
       responses:
         "201": { description: "{ key, secret }" }
         "403": { $ref: "#/components/responses/Error" }
@@ -1335,7 +1349,7 @@ paths:
   /admin/permissions:
     get:
       tags: [Admin]
-      summary: The permission catalog
+      summary: The permission catalog (admin.roles, admin.users, admin.service_accounts or account.api_keys)
       responses: { "200": { description: Permissions } }
   /admin/roles:
     get:
@@ -1416,7 +1430,7 @@ paths:
     post:
       tags: [Admin]
       summary: Issue a service account an API key (the secret is shown once; people create their own)
-      requestBody: { content: { application/json: { schema: { type: object, properties: { name: { type: string }, expires_at: { type: [string, "null"], format: date-time } } } } } }
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/NewAPIKey" } } } }
       responses: { "201": { description: "{ key, secret }" } }
   /admin/access:
     get:

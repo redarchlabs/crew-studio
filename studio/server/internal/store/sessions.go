@@ -207,9 +207,12 @@ func (s *Store) StillValid(ctx context.Context, p *auth.Principal) (*auth.Princi
 		err = s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM sessions WHERE token_hash = $1 AND expires_at > now())`,
 			p.SessionHash).Scan(&alive)
 	case p.APIKeyID != "":
-		err = s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM api_keys WHERE id = $1 AND revoked_at IS NULL
-			AND (expires_at IS NULL OR expires_at > now()))`, p.APIKeyID).Scan(&alive)
-		alive = alive && mayUseAPIKeys(fresh)
+		// The key's limits apply to the reloaded account as they did when the stream began
+		limited, err := s.WithKeyLimits(ctx, fresh, p.APIKeyID)
+		if err != nil {
+			return nil, err
+		}
+		return limited, nil
 	default:
 		alive = true
 	}
@@ -219,6 +222,6 @@ func (s *Store) StillValid(ctx context.Context, p *auth.Principal) (*auth.Princi
 	if !alive {
 		return nil, ErrNotFound
 	}
-	fresh.Via, fresh.SessionHash, fresh.APIKeyID = p.Via, p.SessionHash, p.APIKeyID
+	fresh.Via, fresh.SessionHash = p.Via, p.SessionHash
 	return fresh, nil
 }

@@ -223,7 +223,7 @@ func (l *Launcher) StartCrewRun(ctx context.Context, p *auth.Principal, req Crew
 		return model.Run{}, false, err
 	}
 	meta := store.RunMeta{
-		AreaIDs: crew.AreaIDs, CreatedBy: p.UserID, CreatedByName: p.Name, TriggerType: req.TriggerType,
+		AreaIDs: crew.AreaIDs, CreatedBy: p.UserID, CreatedByName: p.Name, APIKeyID: p.APIKeyID, TriggerType: req.TriggerType,
 		IdempotencyKey: req.IdempotencyKey, Callback: cb,
 	}
 	if req.IdempotencyKey != "" {
@@ -455,7 +455,7 @@ func (l *Launcher) submit(ctx context.Context, p *auth.Principal, wo model.WorkO
 	spec.WorkOrder = workOrderSpec(wo, attachments)
 	spec.WorkOrder.Revision = opts.Revision
 	run, existing, err := l.store.CreateRun(ctx, spec, store.RunMeta{
-		AreaIDs: wo.AreaIDs, CreatedBy: p.UserID, CreatedByName: p.Name, TriggerType: "work_order", WorkOrderID: wo.ID,
+		AreaIDs: wo.AreaIDs, CreatedBy: p.UserID, CreatedByName: p.Name, APIKeyID: p.APIKeyID, TriggerType: "work_order", WorkOrderID: wo.ID,
 		IdempotencyScope: opts.IdempotencyScope, IdempotencyKey: opts.IdempotencyKey, Callback: cb,
 	})
 	if err == nil && !existing {
@@ -536,6 +536,12 @@ func uniqueName(name string, used map[string]bool) string {
 
 // RunAs loads the person a schedule or trigger acts for, checking they can still create work orders.
 func (l *Launcher) RunAs(ctx context.Context, userID *string) (*auth.Principal, error) {
+	return l.RunAsKey(ctx, userID, nil)
+}
+
+// RunAsKey is RunAs for a schedule or trigger last saved with an API key (keyID): the person is limited as the key
+// is, and the work stops when the key no longer works, rather than running with the person's full access.
+func (l *Launcher) RunAsKey(ctx context.Context, userID, keyID *string) (*auth.Principal, error) {
 	if userID == nil {
 		return nil, &ProblemsError{Message: "Nobody to run as.", Details: []string{"The person who set this up no longer exists; save it again to run as yourself."}}
 	}
@@ -545,6 +551,15 @@ func (l *Launcher) RunAs(ctx context.Context, userID *string) (*auth.Principal, 
 	}
 	if err != nil {
 		return nil, err
+	}
+	if keyID != nil {
+		p, err = l.store.WithKeyLimits(ctx, p, *keyID)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, &ProblemsError{Message: "The API key this was saved with no longer works.", Details: []string{"It was revoked or has expired, or its owner may no longer use API keys; save it again to run as yourself."}}
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	p.Via = auth.ViaSystem
 	return p, nil

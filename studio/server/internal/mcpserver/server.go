@@ -33,7 +33,8 @@ type API interface {
 
 const instructions = `Crew Studio holds CrewAI configuration: agents, tasks, crews, LLMs, model pricing, schedules,
 connections and schedule watches.
-You act as the person whose API key you were given, with their permissions and functional areas.
+You act as the person or service account whose API key you were given, with their permissions and functional
+areas, or the part of them the key is limited to (whoami lists what the key may do).
 
 To change something:
 1. Find it with list_items, then read it with get_item.

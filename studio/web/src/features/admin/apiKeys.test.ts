@@ -3,7 +3,8 @@ import type { ApiKey } from '../../api/types'
 import { accountPath, expiresAtFromDate, keyStatus, maskedKey, newKeyProblems, sortKeys } from './apiKeys'
 
 const NOW = Date.parse('2026-06-01T12:00:00Z')
-const key = (over: Partial<ApiKey>): ApiKey => ({ id: 'k', user_id: 'u', name: 'k', prefix: 'ab12', created_at: '2026-01-01T00:00:00Z', expires_at: null, last_used_at: null, revoked_at: null, ...over })
+const key = (over: Partial<ApiKey>): ApiKey => ({ id: 'k', user_id: 'u', name: 'k', prefix: 'ab12', created_at: '2026-01-01T00:00:00Z', expires_at: null, last_used_at: null, revoked_at: null,
+  allow_api: true, allow_mcp: true, permissions: null, area_ids: null, ...over })
 
 describe('keyStatus', () => {
   it('prefers revoked, then expired, else active', () => {

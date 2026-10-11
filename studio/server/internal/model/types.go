@@ -187,11 +187,13 @@ type Run struct {
 	CreatedByName string            `json:"created_by_name"`
 	TriggerType   string            `json:"trigger_type"`
 	// Kind is "crew" for crew runs and "chat" for one turn of a crew chat
-	Kind        string     `json:"kind"`
-	WorkOrderID *string    `json:"work_order_id"`
-	CreatedAt   time.Time  `json:"created_at"`
-	StartedAt   *time.Time `json:"started_at"`
-	FinishedAt  *time.Time `json:"finished_at"`
+	Kind        string  `json:"kind"`
+	WorkOrderID *string `json:"work_order_id"`
+	// APIKeyID is the key that started the run, whose limits still apply while it runs
+	APIKeyID   *string    `json:"-"`
+	CreatedAt  time.Time  `json:"created_at"`
+	StartedAt  *time.Time `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at"`
 	// A pointer so run detail always includes the list (even empty) while run lists leave it out
 	TaskOutputs *[]TaskOutput `json:"task_outputs,omitempty"`
 	Spec        *RunSpec      `json:"spec,omitempty"`

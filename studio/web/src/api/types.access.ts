@@ -99,6 +99,17 @@ export type ApiKey = {
   expires_at: string | null
   last_used_at: string | null
   revoked_at: string | null
+} & ApiKeyLimits
+/** What a key may do below its account. On each request it gets only what both the key and the account allow. */
+export type ApiKeyLimits = {
+  /** Works on the REST API (/api) */
+  allow_api: boolean
+  /** Works on the MCP endpoint (/mcp) */
+  allow_mcp: boolean
+  /** null: every permission the account holds */
+  permissions: Permission[] | null
+  /** null: every functional area the account is in */
+  area_ids: string[] | null
 }
 export type NewApiKey = { key: ApiKey; secret: string }
 /** A key with its account, from the admin list of every key */

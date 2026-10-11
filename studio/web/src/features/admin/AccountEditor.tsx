@@ -184,7 +184,7 @@ export function AccountEditor({ kind, user: loaded, refs }: AccountEditorProps) 
             {kind === 'service' && user && (
               <ApiKeysPanel
                 key={user.id}
-                source={accountKeySource(user.id, true)}
+                source={accountKeySource(user, true)}
                 intro="Keys let another system call the API as this account. Revoking a key stops it immediately."
                 emptyText="No API keys yet. Create one for the system that will call Crew Studio."
               />
@@ -193,7 +193,7 @@ export function AccountEditor({ kind, user: loaded, refs }: AccountEditorProps) 
               <ApiKeysPanel
                 key={user.id}
                 title="Personal API keys"
-                source={accountKeySource(user.id, false)}
+                source={accountKeySource(user, false)}
                 intro="Keys this person created under My API keys to call the API as themselves. Revoke them if a key may be exposed or the person leaves; only they can create keys."
                 emptyText="This person has no API keys."
               />

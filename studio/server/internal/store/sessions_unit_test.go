@@ -213,12 +213,12 @@ func TestAPIKeyLifecycle(t *testing.T) {
 	svc := f.service("bot", model.UserInput{Permissions: []string{auth.CrewsRun}})
 	ctx := WithActor(bg(), Actor{ID: human.ID, Name: "Pat"})
 
-	_, _, err := f.s.CreateAPIKey(ctx, human.ID, "k", nil)
+	_, _, err := f.s.CreateAPIKey(ctx, human.ID, "k", nil, model.FullAccessKey())
 	wantConflict(t, err, "service accounts")
-	_, _, err = f.s.CreateAPIKey(ctx, "99999999-0000-4000-8000-000000000000", "k", nil)
+	_, _, err = f.s.CreateAPIKey(ctx, "99999999-0000-4000-8000-000000000000", "k", nil, model.FullAccessKey())
 	wantNotFound(t, err)
 
-	key, secret, err := f.s.CreateAPIKey(ctx, svc.ID, "ci", nil)
+	key, secret, err := f.s.CreateAPIKey(ctx, svc.ID, "ci", nil, model.FullAccessKey())
 	mustOK(t, err)
 	if !strings.HasPrefix(secret, "csk_"+key.Prefix+"_") || key.UserID != svc.ID || key.RevokedAt != nil {
 		t.Errorf("key %+v secret %q", key, secret)
@@ -286,13 +286,13 @@ func TestAPIKeyExpiryAndDisabledOwner(t *testing.T) {
 	svc := f.service("bot", model.UserInput{})
 
 	past := time.Now().Add(-time.Minute)
-	_, expired, err := f.s.CreateAPIKey(bg(), svc.ID, "old", &past)
+	_, expired, err := f.s.CreateAPIKey(bg(), svc.ID, "old", &past, model.FullAccessKey())
 	mustOK(t, err)
 	_, err = f.s.APIKeyPrincipal(bg(), expired)
 	wantNotFound(t, err)
 
 	future := time.Now().Add(time.Hour)
-	k, live, err := f.s.CreateAPIKey(bg(), svc.ID, "new", &future)
+	k, live, err := f.s.CreateAPIKey(bg(), svc.ID, "new", &future, model.FullAccessKey())
 	mustOK(t, err)
 	if k.ExpiresAt == nil {
 		t.Error("expiry lost")
@@ -348,7 +348,7 @@ func TestStillValid(t *testing.T) {
 	wantNotFound(t, err)
 
 	// API keys
-	key, secret, _ := f.s.CreateAPIKey(bg(), svc.ID, "k", nil)
+	key, secret, _ := f.s.CreateAPIKey(bg(), svc.ID, "k", nil, model.FullAccessKey())
 	kp := must(f.s.APIKeyPrincipal(bg(), secret))
 	fresh, err = f.s.StillValid(bg(), kp)
 	mustOK(t, err)

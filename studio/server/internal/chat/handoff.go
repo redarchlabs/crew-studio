@@ -201,7 +201,7 @@ func (s *Service) StartHandoff(ctx context.Context, req Request) (map[string]any
 		WorkerRole: worker.Role, TimeoutMinutes: settings.HandoffTimeoutMinutes, RequestMessageID: req.MessageID}
 	started, err := s.store.CreateHandoff(ctx, store.NewHandoff{
 		ConversationID: conv.ID, Handoff: *spec.Chat.Handoff, Spec: spec,
-		Meta: store.RunMeta{AreaIDs: base.Crew.AreaIDs, CreatedBy: p.UserID, CreatedByName: p.Name, TriggerType: "manual",
+		Meta: store.RunMeta{AreaIDs: base.Crew.AreaIDs, CreatedBy: p.UserID, CreatedByName: p.Name, APIKeyID: p.APIKeyID, TriggerType: "manual",
 			ChatAgentID: *conv.AgentID},
 		HandoffBudgetUSD: settings.HandoffBudgetUSD, DailyBudgetUSD: budgets.DailyBudgetUSD, PersonBudgetUSD: budgets.PersonDailyBudgetUSD,
 		MinBudgetUSD: MinTurnBudgetUSD, MaxActive: settings.MaxActiveHandoffs, MaxPerson: maxPersonHandoffs,

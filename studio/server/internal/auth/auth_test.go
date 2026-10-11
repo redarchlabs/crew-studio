@@ -62,6 +62,39 @@ func TestPrincipal(t *testing.T) {
 	}
 }
 
+func TestPrincipalLimited(t *testing.T) {
+	p := &Principal{UserID: "u", AreaIDs: []string{"a", "b"}, Permissions: map[string]bool{CrewsView: true, CrewsEdit: true}}
+
+	// No limits: the same access, in a copy that does not share the permission map
+	same := p.Limited(nil, nil)
+	same.Permissions[AdminUsers] = true
+	if p.Can(AdminUsers) || same.UserID != "u" || len(same.AreaIDs) != 2 {
+		t.Errorf("unlimited copy = %+v, original = %+v", same, p)
+	}
+
+	// Limits keep only what both the principal and the key allow
+	got := p.Limited([]string{CrewsView, AdminUsers}, []string{"b", "z"})
+	if !got.Can(CrewsView) || got.Can(CrewsEdit) || got.Can(AdminUsers) {
+		t.Errorf("permissions = %v", got.PermissionList())
+	}
+	if got.AllAreas || len(got.AreaIDs) != 1 || got.AreaIDs[0] != "b" || got.SeesAreas([]string{"a"}) {
+		t.Errorf("areas = %v (all %v)", got.AreaIDs, got.AllAreas)
+	}
+	if len(p.AreaIDs) != 2 || !p.Can(CrewsEdit) {
+		t.Errorf("the original changed: %+v", p)
+	}
+
+	// An all-areas principal limited to some areas sees only those, and no longer sees items without areas
+	all := (&Principal{AllAreas: true}).Limited(nil, []string{"z"})
+	if all.AllAreas || !all.HasArea("z") || all.HasArea("a") || all.SeesAreas(nil) {
+		t.Errorf("all-areas limited = %+v", all)
+	}
+	// Empty limits allow nothing
+	if none := p.Limited([]string{}, []string{}); len(none.PermissionList()) != 0 || len(none.AreaIDs) != 0 {
+		t.Errorf("empty limits = %+v", none)
+	}
+}
+
 func TestIdentityFromClaims(t *testing.T) {
 	yes, no := true, false
 	clerk := ClerkProvider("https://x.clerk.accounts.dev", "id", "s")

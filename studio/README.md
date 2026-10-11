@@ -118,7 +118,9 @@ Claude and Gemini); other agents are told the file names. Each run gets its own 
   for trying any endpoint as yourself or with a service account key; the full contract is [docs/api.md](docs/api.md).
 - **Personal API keys** (Developers > My API keys) let people holding `account.api_keys` call the API as
   themselves from scripts. Admin > API keys lists every key in the system, people's and service accounts', for
-  review and revocation. Keys are shown once and stored only as one-way hashes.
+  review and revocation. Keys are shown once and stored only as one-way hashes. Any key can be limited when it is
+  created: to the REST API, MCP or both, and to some of its account's permissions and functional areas (never more
+  than the account holds, checked on every request).
 
 ## In-app help
 

@@ -2,6 +2,7 @@ import { request, requestPage } from './client'
 import type {
   AccessSettings,
   AccountApiKey,
+  ApiKeyLimits,
   ApiKeyQuery,
   Area,
   AreaInput,
@@ -155,7 +156,7 @@ export const areasApi = {
   remove: (id: string) => request<void>('DELETE', `/areas/${id}`),
 }
 
-export type NewApiKeyInput = { name: string; expires_at: string | null }
+export type NewApiKeyInput = { name: string; expires_at: string | null } & ApiKeyLimits
 
 /** The signed-in person's own API keys */
 export const accountApi = {

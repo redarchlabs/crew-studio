@@ -363,12 +363,12 @@ func (s *Server) fireTrigger(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	p, err := s.launcher.RunAs(r.Context(), trigger.RunAs)
+	p, err := s.launcher.RunAsKey(r.Context(), trigger.RunAs, trigger.RunAsKey)
 	if err != nil {
 		failErr(w, r, s.log, err)
 		return
 	}
-	ctx := store.WithActor(r.Context(), store.Actor{ID: p.UserID, Name: p.Name + " (trigger " + trigger.Name + ")"})
+	ctx := store.WithActor(r.Context(), store.Actor{ID: p.UserID, Name: p.Name + " (trigger " + trigger.Name + ")", APIKeyID: p.APIKeyID})
 	var callback *launch.CallbackRequest
 	if trigger.CallbackURL != nil {
 		callback = &launch.CallbackRequest{URL: *trigger.CallbackURL, Source: store.CallbackFromTrigger, Owner: trigger.ID}

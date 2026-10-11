@@ -206,7 +206,7 @@ func (s *Service) start(ctx context.Context, p *auth.Principal, conv model.Conve
 	started, err := s.store.CreateChatTurn(ctx, store.ChatTurn{
 		ConversationID: conv.ID, Content: text, Files: files, Spec: spec, DailyBudgetUSD: settings.DailyBudgetUSD,
 		PersonBudgetUSD: settings.PersonDailyBudgetUSD, MinBudgetUSD: MinTurnBudgetUSD,
-		Meta: store.RunMeta{AreaIDs: base.Crew.AreaIDs, CreatedBy: p.UserID, CreatedByName: p.Name, TriggerType: trigger,
+		Meta: store.RunMeta{AreaIDs: base.Crew.AreaIDs, CreatedBy: p.UserID, CreatedByName: p.Name, APIKeyID: p.APIKeyID, TriggerType: trigger,
 			ChatAgentID: chatAgentID(conv)},
 	})
 	if err != nil {

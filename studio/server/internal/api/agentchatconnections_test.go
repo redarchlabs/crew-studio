@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"crewstudio/internal/auth"
 	"crewstudio/internal/chat"
 	"crewstudio/internal/km2/km2test"
 	"crewstudio/internal/model"
@@ -349,5 +350,23 @@ func TestAgentChatKM2AmbiguityCountsOnlyVisibleConnections(t *testing.T) {
 	wantStatus(t, r, http.StatusOK)
 	if found := decodeData[km2SearchView](t, r); found.Connection != "KM2 Finance" {
 		t.Errorf("search went through %q", found.Connection)
+	}
+}
+
+// A turn started with an API key keeps the key's limits while it runs: once the key is revoked, it reads nothing.
+func TestAgentChatTrackerReadsFollowTheKey(t *testing.T) {
+	e := newTrackerEnv(t)
+	conn := e.jiraConnection(t, nil)
+	e.agentChatTracker(t, conn.ID)
+	_, ann := e.person(t, "ann@example.com", []string{operatorRole}, []string{financeArea, hrArea}, []string{auth.AccountAPIKeys})
+	created := decodeData[newKeyResponse](t, e.as(ann).do(t, "POST", "/api/account/api-keys", map[string]any{"name": "chat",
+		"area_ids": []string{financeArea}}))
+	view := decodeData[conversationView](t, e.as("").do(t, "POST", "/api/chat/conversations",
+		map[string]any{"agent_id": chatPartner, "content": "PRJ-11?"}, "Authorization", "Bearer "+created.Secret))
+	sr := e.runningTurn(t, model.Crew{}, *view.Messages[1].RunID)
+	wantStatus(t, e.call(t, sr, "GET", "/trackers/issues/PRJ-11", nil), http.StatusOK)
+	wantStatus(t, e.as(ann).do(t, "DELETE", "/api/account/api-keys/"+created.Key.ID, nil), http.StatusNoContent)
+	if got := e.call(t, sr, "GET", "/trackers/issues/PRJ-11", nil); got.status != http.StatusConflict || got.body.Error.Code != "no_tracker" {
+		t.Errorf("after the key was revoked = %d %+v", got.status, got.body.Error)
 	}
 }
