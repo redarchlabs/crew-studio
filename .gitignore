@@ -1,0 +1,17 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# local environments and caches
+.venv/
+__pycache__/
+.pytest_cache/
+.coverage
+.claude/
+
+# one-off crew experiments and their output (kept local, not part of the repo)
+CourseraAssignment.py
+research_file.py
+output/
+spend_log.csv

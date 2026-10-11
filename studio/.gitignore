@@ -1,0 +1,21 @@
+.env
+workspace/*
+!workspace/.gitkeep
+server/bin/
+web/node_modules/
+web/dist/
+__pycache__/
+data/
+
+# dependencies
+node_modules/
+
+# build and test output
+.coverage
+.pytest_cache/
+web/coverage/
+e2e/out/
+e2e/out-*/
+e2e/test-results/
+e2e/playwright-report/
+*.log

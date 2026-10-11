@@ -1,0 +1,218 @@
+[
+  {
+    "key": "google_search",
+    "name": "Google Search",
+    "description": "Searches Google through Gemini's Google Search grounding and returns a summarized answer with the source URLs. Each search is priced with the search model price and the grounding rate in Settings.",
+    "requires_env": [
+      "GEMINI_API_KEY"
+    ],
+    "effect": "reads",
+    "needs": []
+  },
+  {
+    "key": "scrape_website",
+    "name": "Scrape Website",
+    "description": "Fetches a public web page and returns its readable text. Local and private network addresses are blocked.",
+    "requires_env": [],
+    "effect": "reads",
+    "needs": []
+  },
+  {
+    "key": "workspace_read",
+    "name": "Read Workspace File",
+    "description": "Reads a text file from the studio workspace folder. Files outside the workspace cannot be read.",
+    "requires_env": [],
+    "effect": "reads",
+    "needs": []
+  },
+  {
+    "key": "workspace_write",
+    "name": "Write Workspace File",
+    "description": "Writes a text file into the studio workspace folder. Files outside the workspace cannot be written.",
+    "requires_env": [],
+    "effect": "changes",
+    "needs": []
+  },
+  {
+    "key": "generate_video",
+    "name": "Generate Video",
+    "description": "Generates a 3-10 second video clip with sound from a prompt (optionally starting from a workspace image) with Google's Gemini Omni Flash and saves it as an MP4 in the workspace. Billed by tokens at the Pricing page's gemini-omni-1.1-flash price, about $0.10 per second at 720p; a clip that would not fit in the run's remaining budget is refused. Needs a GEMINI_API_KEY allowed to use the Gemini API (Generative Language API).",
+    "requires_env": [
+      "GEMINI_API_KEY"
+    ],
+    "priced_model": "gemini-omni-1.1-flash",
+    "effect": "changes",
+    "needs": []
+  },
+  {
+    "key": "notes_get",
+    "name": "Read Note",
+    "description": "Reads the latest version of one of the crew's notes (working memory kept between runs, such as last week's report). Notes belong to the crew and, for scheduled runs, to the schedule. Each read is written in the run's journal.",
+    "requires_env": [],
+    "effect": "reads",
+    "needs": [
+      "crew"
+    ]
+  },
+  {
+    "key": "notes_put",
+    "name": "Write Note",
+    "description": "Saves a new version of one of the crew's notes (up to 64 KB). Earlier versions are kept, and people can see and roll them back on the crew's State tab. Pass the version that was read so two runs never overwrite each other.",
+    "requires_env": [],
+    "effect": "changes",
+    "needs": [
+      "crew"
+    ]
+  },
+  {
+    "key": "notes_list",
+    "name": "List Notes",
+    "description": "Lists the crew's notes with their subjects, versions and sizes, without their text.",
+    "requires_env": [],
+    "effect": "reads",
+    "needs": [
+      "crew"
+    ]
+  },
+  {
+    "key": "log_check",
+    "name": "Check Action Log",
+    "description": "Looks up exactly whether the crew already did something (for example reminded someone about an issue), optionally within a period such as 7d. Costs no tokens beyond the tool call.",
+    "requires_env": [],
+    "effect": "reads",
+    "needs": [
+      "crew"
+    ]
+  },
+  {
+    "key": "log_record",
+    "name": "Record Action",
+    "description": "Adds an entry to the crew's action log (what was done, about what, with details). An idempotency key makes a retried call record once.",
+    "requires_env": [],
+    "effect": "changes",
+    "needs": [
+      "crew"
+    ]
+  },
+  {
+    "key": "tracker_list_projects",
+    "name": "List Tracker Projects",
+    "description": "Lists the Jira projects or Linear teams (with keys and leads) of a tracker connection the crew may use. Crew Studio makes the call, so tracker credentials never reach the run.",
+    "requires_env": [],
+    "effect": "reads",
+    "needs": [
+      "tracker"
+    ]
+  },
+  {
+    "key": "tracker_find_issues",
+    "name": "Find Tracker Issues",
+    "description": "Finds issues in a Jira project or Linear team that are overdue, due soon, not updated for a while, unassigned, blocked or owned by someone. Tracker text is passed to agents as untrusted data.",
+    "requires_env": [],
+    "effect": "reads",
+    "needs": [
+      "tracker"
+    ]
+  },
+  {
+    "key": "tracker_get_issue",
+    "name": "Get Tracker Issue",
+    "description": "Reads one Jira or Linear issue with its description and 10 newest comments. Tracker text is passed to agents as untrusted data.",
+    "requires_env": [],
+    "effect": "reads",
+    "needs": [
+      "tracker"
+    ]
+  },
+  {
+    "key": "tracker_get_children",
+    "name": "Get Tracker Children",
+    "description": "Lists an issue's child issues (Jira epic, stories and sub-tasks; Linear sub-issues), every level or direct children only.",
+    "requires_env": [],
+    "effect": "reads",
+    "needs": [
+      "tracker"
+    ]
+  },
+  {
+    "key": "tracker_comment",
+    "name": "Comment on Tracker Issue",
+    "description": "Posts a comment on a Jira or Linear issue with @mentions and records it in the action log (as a follow-up step when given one). A dry run posts nothing. Capped per run and per person per day.",
+    "requires_env": [],
+    "effect": "changes",
+    "needs": [
+      "tracker"
+    ]
+  },
+  {
+    "key": "tracker_suggest_change",
+    "name": "Suggest Tracker Change",
+    "description": "Suggests a change to an issue's due date, owner, status or another field as a comment. Never changes the field. Logged, capped and dry-run like comments.",
+    "requires_env": [],
+    "effect": "changes",
+    "needs": [
+      "tracker"
+    ]
+  },
+  {
+    "key": "tracker_create_issue",
+    "name": "Create Tracker Issue",
+    "description": "Creates a Jira or Linear issue, only where an administrator turned on Let crews create issues for the connection. A dry run creates nothing.",
+    "requires_env": [],
+    "effect": "changes",
+    "needs": [
+      "tracker"
+    ]
+  },
+  {
+    "key": "tracking_list_get",
+    "name": "Read Tracking List",
+    "description": "Lists the tracker items the crew tracks (with their projects, leads and notes). Runs can only read the list; people change it in chat or on the State tab.",
+    "requires_env": [],
+    "effect": "reads",
+    "needs": [
+      "crew"
+    ]
+  },
+  {
+    "key": "km_search",
+    "name": "Search Knowledge (KM2)",
+    "description": "Searches the organisation's knowledge base (KM2) for passages, as the KM2 profile of the crew's KM2 connection. Crew Studio makes the call, so the KM2 key never reaches the run. KM2 text is passed to agents as untrusted data.",
+    "requires_env": [],
+    "effect": "reads",
+    "needs": [
+      "km2"
+    ]
+  },
+  {
+    "key": "km_ask",
+    "name": "Ask Knowledge (KM2)",
+    "description": "Asks KM2 a question and returns its answer with the documents it is based on, as the crew's KM2 profile. KM2 text is passed to agents as untrusted data.",
+    "requires_env": [],
+    "effect": "reads",
+    "needs": [
+      "km2"
+    ]
+  },
+  {
+    "key": "km_save_document",
+    "name": "Save to Knowledge (KM2)",
+    "description": "Saves a document (text or a workspace text file) to a KM2 folder an administrator allowed; the same external_ref saves a new version. Recorded in the action log as km2:save, capped per run, and nothing is sent in a dry run.",
+    "requires_env": [],
+    "effect": "changes",
+    "needs": [
+      "km2"
+    ]
+  },
+  {
+    "key": "deliver_report",
+    "name": "Deliver Report",
+    "description": "Delivers one project's finished report: Crew Studio sends it to the work order output and every destination set on the schedule (Slack, Teams, email, KM2), logs each delivery as report:<destination> and keeps it as the project's weekly-report note. Capped per run; nothing is sent in a dry run.",
+    "requires_env": [],
+    "effect": "changes",
+    "needs": [
+      "crew",
+      "schedule"
+    ]
+  }
+]

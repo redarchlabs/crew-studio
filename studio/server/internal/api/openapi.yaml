@@ -1,0 +1,2211 @@
+openapi: 3.1.0
+info:
+  title: Crew Studio API
+  version: "1.0"
+  description: |
+    Start CrewAI work from other systems and read the results. Every response uses the envelope
+    `{ success, data, error: { code, message, details }, meta }`. The full contract (including the admin and
+    editing endpoints) is in studio/docs/api.md.
+
+    Authenticate with a service account API key (`Authorization: Bearer csk_...`), or call a webhook trigger
+    with its own token. Send `Idempotency-Key` on POSTs that start work so retries are safe.
+servers:
+  - url: /api
+security:
+  - apiKey: []
+  - session: []
+tags:
+  - { name: Sign-in, description: Who you are and how you signed in }
+  - { name: Work orders, description: Execute a crew with a brief and files; journal and full output }
+  - { name: Runs, description: Executions, their events, LLM calls, files and journal }
+  - { name: Crews }
+  - { name: Agents }
+  - { name: Tasks }
+  - { name: Schedules }
+  - { name: Triggers, description: Webhooks other systems call }
+  - { name: Configuration, description: LLMs, prices, settings, tools }
+  - { name: History }
+  - { name: Account, description: Your own API keys }
+  - { name: Help, description: In-app help filtered by your permissions }
+  - { name: Connections, description: "Credentials for outside systems (Jira, Linear, KM2, HTTP, Slack, Teams, email). Secrets are write-only: they can be replaced, never read." }
+  - { name: Crew state, description: "A crew's notes (versioned working memory) and action log, and which connections it may use" }
+  - { name: Run state, description: "Called by a running crew's state tools with the run's own token (csr_...). Not for people or API keys." }
+  - { name: Memory, description: "Soft lessons a crew learns between runs, recalled by similarity before each task (state.view to see, state.manage to change). Scopes are paths relative to the crew, such as / or /people/sam." }
+  - { name: Chat, description: "Talk to a crew's front desk agent (crews.chat). Each message is a short run of kind chat; changes it wants wait for the person's Confirm." }
+  - { name: Human input, description: "A crew's rules for when its agents ask a person, and the questions waiting on you. A run with an open question is running and waits for the answer." }
+  - { name: Admin, description: "People, service accounts, roles, functional areas, sign-in settings, audit. API keys may read these but not change them (or read signing secrets): that needs a signed-in session." }
+components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      description: Service account API key (csk_<prefix>_<secret>), created under Admin > Service accounts.
+    session:
+      type: apiKey
+      in: cookie
+      name: crewstudio_session
+      description: Browser session (set by signing in). The API explorer page uses it automatically.
+    triggerToken:
+      type: http
+      scheme: bearer
+      description: Trigger token (cst_<prefix>_<secret>), shown once when the trigger is created or rotated.
+    runToken:
+      type: http
+      scheme: bearer
+      description: A run's own token (csr_...), given to the runner on stdin when the run starts. It expires shortly after the run ends.
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    idempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 200 }
+      description: Repeating a request with the same key returns the first result instead of starting more work.
+    limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    offset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+  responses:
+    Error:
+      description: Failure envelope
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+  schemas:
+    TrackingItemInput:
+      type: object
+      required: [connection_id, item_ref]
+      properties:
+        connection_id: { type: string, format: uuid }
+        item_ref: { type: string, examples: [PRJ-10] }
+        project: { type: string, description: "A name such as Atlas; empty uses the item's project key" }
+        include_children: { type: string, enum: [all, direct, none], default: all }
+        note: { type: string, maxLength: 1000 }
+        lead_account_id: { type: string, description: "Who escalations go to instead of the project lead (a tracker account id)" }
+        schedule_id: { type: [string, "null"], format: uuid, description: "Only that schedule's tracking_list watch reads it; null for the whole crew" }
+    TrackingItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        crew_id: { type: string, format: uuid }
+        schedule_id: { type: [string, "null"], format: uuid, description: "null: crew-wide" }
+        schedule_name: { type: string }
+        connection_id: { type: string, format: uuid }
+        connection_name: { type: string }
+        connection_kind: { type: string, enum: [jira, linear] }
+        project: { type: string }
+        item_ref: { type: string, examples: [PRJ-10] }
+        include_children: { type: string, enum: [all, direct, none] }
+        note: { type: string }
+        lead_account_id: { type: string, description: "Who escalations go to instead of the project lead (a tracker account id); empty for none" }
+        lead_name: { type: string, description: "The lead's name from the connection's people map; empty when the account is not in it" }
+        added_by: { type: [string, "null"], format: uuid }
+        added_by_name: { type: string }
+        added_at: { type: string, format: date-time }
+        removed_at: { type: [string, "null"], format: date-time }
+        removed_by_name: { type: string }
+    ErrorEnvelope:
+      type: object
+      properties:
+        success: { const: false }
+        data: { type: "null" }
+        error:
+          type: object
+          properties:
+            code: { type: string, examples: [validation_failed, unauthenticated, forbidden, not_found, conflict, rate_limited] }
+            message: { type: string }
+            details: { type: array, items: { type: string } }
+    RunStatus:
+      type: string
+      enum: [queued, running, succeeded, failed, cancelled]
+    Run:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        crew_id: { type: [string, "null"], format: uuid }
+        crew_name: { type: string }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        inputs: { type: object, additionalProperties: { type: string } }
+        budget_usd: { type: number }
+        output: { type: [string, "null"], description: Final output (markdown) }
+        error: { type: [string, "null"] }
+        cost_usd: { type: [number, "null"] }
+        trigger_type: { type: string, enum: [manual, api, schedule, webhook, work_order] }
+        kind: { type: string, enum: [crew, chat], description: "crew for crew runs, chat for one turn of a crew chat" }
+        work_order_id: { type: [string, "null"], format: uuid }
+        created_at: { type: string, format: date-time }
+        started_at: { type: [string, "null"], format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        task_outputs:
+          type: array
+          items:
+            type: object
+            properties:
+              position: { type: integer }
+              task_name: { type: string }
+              agent_role: { type: string }
+              raw: { type: string }
+    ChatSettings:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        front_desk_agent_id: { type: [string, "null"], format: uuid, description: One of the crew's agents; required when enabled }
+        llm_id: { type: [string, "null"], format: uuid, description: "A model for chat instead of the front desk's own (usually cheaper)" }
+        daily_budget_usd: { type: number, exclusiveMinimum: 0, maximum: 100, description: What one conversation may spend in any 24 hours (default 1.0) }
+        person_daily_budget_usd: { type: number, exclusiveMinimum: 0, maximum: 1000, description: What one person may spend on the crew's chat in any 24 hours over all their conversations (default 5.0) }
+        crew_id: { type: string, format: uuid, readOnly: true }
+        updated_by_name: { type: string, readOnly: true }
+        updated_at: { type: [string, "null"], format: date-time, readOnly: true }
+    AgentChatSettings:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        llm_id: { type: [string, "null"], format: uuid, description: "A model for the agent in chat instead of its own (usually cheaper); specialists keep their own" }
+        specialist_ids: { type: array, maxItems: 8, items: { type: string, format: uuid }, description: "Agents it may ask in the same turn, in order; each with a role of its own" }
+        crew_ids: { type: array, maxItems: 10, items: { type: string, format: uuid }, description: Crews it may propose a work order on }
+        connection_ids: { type: array, maxItems: 10, items: { type: string, format: uuid }, description: "Connections its tracker and KM2 read tools may use in chat, in order: Jira, Linear, KM2 issues or KM2, at most one KM2 (otherwise 422). You may only add connections in your areas, and adding one needs connections.view (403); saved ones are kept. A turn uses those that are enabled and share an area with the person chatting and the agent." }
+        daily_budget_usd: { type: number, exclusiveMinimum: 0, maximum: 100, description: What one conversation may spend in any 24 hours (default 1.0) }
+        person_daily_budget_usd: { type: number, exclusiveMinimum: 0, maximum: 1000, description: What one person may spend chatting with the agent in any 24 hours (default 5.0) }
+        handoffs_enabled: { type: boolean, description: "The agent may propose hand-offs: background runs for work too long for one turn, each started by the person's Confirm" }
+        handoff_budget_usd: { type: number, exclusiveMinimum: 0, maximum: 100, description: "What one hand-off may spend (default 0.5); the conversation's and the person's daily budgets also apply" }
+        handoff_timeout_minutes: { type: integer, minimum: 1, maximum: 180, description: How long one hand-off may run (default 20) }
+        max_active_handoffs: { type: integer, minimum: 1, maximum: 5, description: Hand-offs running at once in one conversation (default 2); one person may have 5 with one agent }
+        questions_enabled: { type: boolean, description: "During a hand-off, the lead may bring a specialist's question to the person (a Waiting for you card in the conversation); specialists may always ask the lead" }
+        question_rules: { type: string, maxLength: 4000, description: When the lead should ask the person, in plain language; required when questions_enabled }
+        question_timeout_minutes: { type: integer, minimum: 1, maximum: 180, description: "How long a question waits for an answer (default 30); never past a minute before the hand-off's own deadline, which does not pause while it waits" }
+        question_on_timeout: { type: string, enum: [proceed, fail], description: "proceed (default): the hand-off carries on and states its assumption; fail: it stops, keeping what was written" }
+        max_questions: { type: integer, minimum: 1, maximum: 20, description: Questions to the person in one hand-off (default 3) }
+        specialists_may_propose: { type: boolean, description: "The specialists get the proposing counterparts of their own changing tools (tracker comment, suggestion and new issue, KM2 save) as the lead always does: each makes a Confirm card; nothing changes until the person confirms (default false)" }
+        agent_id: { type: string, format: uuid, readOnly: true }
+        updated_by_name: { type: string, readOnly: true }
+        updated_at: { type: [string, "null"], format: date-time, readOnly: true }
+        hidden_specialists: { type: integer, readOnly: true, description: "Specialists outside your areas, left out of specialist_ids; saving keeps them where they are" }
+        hidden_crews: { type: integer, readOnly: true, description: "Crews outside your areas, left out of crew_ids; saving keeps them where they are" }
+        hidden_connections: { type: integer, readOnly: true, description: "Connections outside your areas, left out of connection_ids; saving keeps them where they are" }
+    EscalationSettings:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        rules: { type: string, maxLength: 4000, description: When to ask a person, in plain language; required when enabled }
+        timeout_minutes: { type: integer, minimum: 1, maximum: 180, description: How long a question waits for an answer (default 30) }
+        on_timeout: { type: string, enum: [proceed, fail], description: "proceed: the agent carries on and states its assumption; fail: the run stops" }
+        max_questions: { type: integer, minimum: 1, maximum: 20, description: Questions one run may ask (default 5) }
+        crew_id: { type: string, format: uuid, readOnly: true }
+        updated_by_name: { type: string, readOnly: true }
+        updated_at: { type: [string, "null"], format: date-time, readOnly: true }
+    HumanQuestion:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        work_order_id: { type: [string, "null"], format: uuid }
+        work_order_number: { type: [integer, "null"] }
+        work_order_title: { type: string }
+        crew_name: { type: string }
+        assignee_id: { type: [string, "null"], format: uuid, description: The person asked; null when the run was not started by a person }
+        agent_role: { type: string }
+        asked_for: { type: string, description: "The agent the question was asked for: in a hand-off the lead asks on behalf of a specialist (asked by asked_for through agent_role); empty otherwise" }
+        task_name: { type: string }
+        question: { type: string }
+        context: { type: string }
+        status: { type: string, enum: [open, answered, timed_out, closed] }
+        answer: { type: string }
+        answered_by_name: { type: string }
+        asked_at: { type: string, format: date-time }
+        deadline_at: { type: string, format: date-time }
+        answered_at: { type: [string, "null"], format: date-time }
+        conversation_id: { type: [string, "null"], format: uuid, description: "Set for a question from an agent chat's hand-off: answer it in that conversation" }
+        conversation_title: { type: string }
+        handoff_id: { type: [string, "null"], format: uuid }
+        handoff_title: { type: string }
+    MemorySettings:
+      type: object
+      properties:
+        mode: { type: string, enum: ["off", recall_only, explicit, automatic], description: "off; recall_only (runs read memories); explicit (agents save with the Remember tool, no LLM call); automatic (memories extracted after each task, one LLM call per task)" }
+        llm_id: { type: [string, "null"], format: uuid, description: "The model for automatic extraction and deep recall; null uses the crew's cheapest priced agent model (resolved when a run starts). Must have a price." }
+        recall_depth: { type: string, enum: [shallow, deep], description: "shallow: one embedding and a vector scan per task; deep: CrewAI's LLM-driven recall" }
+        recall_limit: { type: integer, minimum: 1, maximum: 20, default: 5 }
+        saves_per_run: { type: integer, minimum: 0, maximum: 100, default: 20 }
+        retention_days: { type: [integer, "null"], minimum: 1, maximum: 3650, default: 365, description: Unpinned memories older than this are deleted; null keeps them }
+        review_run_saves: { type: boolean, default: true, description: "Every memory a run saves (the Remember tool, automatic extraction) waits as pending (not recalled) until a person approves it; unapproved ones are deleted after 30 days. On by default because text a crew reads can plant instructions. Memories people add are active at once." }
+        recency_weight: { type: number, minimum: 0, maximum: 1, default: 0.3 }
+        semantic_weight: { type: number, minimum: 0, maximum: 1, default: 0.5 }
+        importance_weight: { type: number, minimum: 0, maximum: 1, default: 0.2 }
+        recency_half_life_days: { type: integer, minimum: 1, maximum: 3650, default: 30 }
+        crew_id: { type: string, format: uuid, readOnly: true }
+        updated_by_name: { type: string, readOnly: true }
+        updated_at: { type: [string, "null"], format: date-time, readOnly: true }
+    MemorySettingsView:
+      type: object
+      properties:
+        settings: { $ref: "#/components/schemas/MemorySettings" }
+        available: { type: boolean, description: False when the server cannot embed; memory can then only be off }
+        unavailable_reason: { type: string }
+        embed_model: { type: string, examples: ["text-embedding-3-small:768"] }
+        suggested_llm_id: { type: [string, "null"], format: uuid, description: "The crew's cheapest priced agent model, used when llm_id is null" }
+        reembed_pending: { type: integer, minimum: 0, description: "The crew's memories still embedded with an older model; they are re-embedded in the background and recall cannot find them until then" }
+    MemoryRecord:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        content: { type: string, maxLength: 2000 }
+        scope: { type: string, examples: ["/", "/people/sam"] }
+        categories: { type: array, items: { type: string } }
+        metadata: { type: object }
+        importance: { type: number, minimum: 0, maximum: 1 }
+        source: { type: string, description: "run:<run id> or user:<name>" }
+        private: { type: boolean, const: false }
+        pinned: { type: boolean, description: Pinned memories are kept past the retention period }
+        status: { type: string, enum: [active, pending] }
+        run_id: { type: [string, "null"], format: uuid }
+        agent_role: { type: string }
+        task_name: { type: string }
+        written_by: { type: string }
+        created_at: { type: string, format: date-time }
+        last_accessed: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        km2_document_id: { type: [string, "null"] }
+    ChatMessage:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        role: { type: string, enum: [user, assistant, summary], description: "summary: a compaction; later turns are given it instead of the messages before it" }
+        content: { type: string, description: Empty for a reply whose run has not succeeded (yet) }
+        proposal: { type: [object, "null"], properties: { type: { type: string, enum: [start_work_order, notes_put, tracking_add, tracking_remove, start_handoff, tracker_comment, tracker_suggestion, tracker_issue, km2_save] }, summary: { type: string }, payload: { type: object } } }
+        proposal_state: { type: [string, "null"], enum: [pending, confirmed, declined, expired, null] }
+        proposed_at: { type: [string, "null"], format: date-time, description: The proposal expires 24 hours later }
+        proposal_result: { type: [object, "null"], description: "What applying it did: { work_order_id, work_order_number, run_id }, { name, subject, version, previous_version, undoable }, for start_handoff { handoff_id, run_id, message_id }, for tracker_comment and tracker_suggestion { connection, issue, comment_id, url }, for tracker_issue { connection, issue, url }, for km2_save { connection, document_id, outcome, external_ref, folder_id }" }
+        decided_by_name: { type: string }
+        decided_at: { type: [string, "null"], format: date-time }
+        undone_at: { type: [string, "null"], format: date-time }
+        run_id: { type: [string, "null"], format: uuid }
+        run_kind: { type: string, enum: [chat, handoff], description: "The kind of the run writing an assistant message: chat for a reply, handoff for a hand-off's result; left out without a run" }
+        handoff_proposal: { type: boolean, description: "A card a hand-off proposed while it worked (handoff is set, run_id is null, content is the card's summary); left out otherwise" }
+        handoff: { type: object, description: "Set on a hand-off's messages: its result, and the cards it proposed", properties: { id: { type: string, format: uuid }, title: { type: string }, worker_name: { type: string }, worker_role: { type: string }, deadline_at: { type: string, format: date-time }, budget_usd: { type: number }, timeout_minutes: { type: integer }, started_at: { type: [string, "null"], format: date-time }, open_question_id: { type: [string, "null"], format: uuid, description: The question its run is waiting on you to answer } } }
+        run_status: { oneOf: [{ $ref: "#/components/schemas/RunStatus" }, { type: "null" }] }
+        run_error: { type: string, description: First line of why the reply failed }
+        cost_usd: { type: [number, "null"] }
+        created_at: { type: string, format: date-time }
+    ConversationView:
+      type: object
+      properties:
+        conversation: { type: object, properties: { id: { type: string }, crew_id: { type: [string, "null"], description: Null for a conversation with an agent }, crew_name: { type: string }, agent_id: { type: [string, "null"], description: Set for a conversation with an agent }, agent_name: { type: string }, user_id: { type: string }, title: { type: string }, created_at: { type: string }, updated_at: { type: string } } }
+        messages: { type: array, items: { $ref: "#/components/schemas/ChatMessage" } }
+        budget: { type: object, properties: { daily_budget_usd: { type: number }, spent_last_24h_usd: { type: number }, person_daily_budget_usd: { type: number }, person_spent_last_24h_usd: { type: number }, remaining_usd: { type: number } } }
+        chat_enabled: { type: boolean }
+        handoffs: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/Handoff" }, description: "The conversation's latest hand-offs, newest first (empty with a crew)" }
+        questions: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/HumanQuestion" }, description: "The open questions its hand-offs are waiting on you to answer, soonest due first (empty with a crew)" }
+    Handoff:
+      type: object
+      description: A hand-off from an agent chat, worked in the background; its result is the message result_message_id
+      properties:
+        id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        request_message_id: { type: [string, "null"], format: uuid, description: The reply whose card started it }
+        result_message_id: { type: string, format: uuid }
+        run_id: { type: [string, "null"], format: uuid, description: Null once the run was deleted }
+        worker_agent_id: { type: [string, "null"], format: uuid }
+        worker_name: { type: string }
+        worker_role: { type: string }
+        title: { type: string }
+        brief: { type: string }
+        budget_usd: { type: number }
+        timeout_minutes: { type: integer, minimum: 1, maximum: 180 }
+        deadline_at: { type: string, format: date-time, description: "timeout_minutes after the run started (after it was made, while it waits for a slot)" }
+        created_at: { type: string, format: date-time }
+        run_status: { oneOf: [{ $ref: "#/components/schemas/RunStatus" }, { type: "null" }], description: Null once the run was deleted; the hand-off and its result are kept }
+        run_error: { type: string }
+        cost_usd: { type: [number, "null"] }
+        started_at: { type: [string, "null"], format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        open_question_id: { type: [string, "null"], format: uuid, description: "The question its run is waiting on you to answer, if any" }
+    Entity:
+      type: object
+      additionalProperties: true
+      description: See studio/docs/api.md for every field.
+    Agent:
+      type: object
+      required: [name, role, goal, backstory, max_iter, area_ids]
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        name: { type: string }
+        role: { type: string }
+        goal: { type: string }
+        backstory: { type: string }
+        llm_id: { type: [string, "null"], format: uuid }
+        tools: { type: array, items: { type: string } }
+        max_iter: { type: integer, minimum: 1, maximum: 100 }
+        allow_delegation: { type: boolean }
+        verbose: { type: boolean }
+        area_ids: { type: array, items: { type: string, format: uuid }, minItems: 1 }
+    Task:
+      type: object
+      required: [name, description, expected_output, area_ids]
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        name: { type: string }
+        description: { type: string }
+        expected_output: { type: string }
+        agent_id: { type: [string, "null"], format: uuid }
+        context_task_ids: { type: array, items: { type: string, format: uuid } }
+        markdown: { type: boolean }
+        area_ids: { type: array, items: { type: string, format: uuid }, minItems: 1 }
+    Crew:
+      type: object
+      required: [name, process, budget_usd, area_ids]
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        name: { type: string }
+        description: { type: string }
+        process: { type: string, enum: [sequential, hierarchical] }
+        manager_llm_id: { type: [string, "null"], format: uuid }
+        agent_ids: { type: array, items: { type: string, format: uuid } }
+        task_ids: { type: array, items: { type: string, format: uuid } }
+        inputs:
+          type: array
+          items:
+            type: object
+            properties: { key: { type: string }, label: { type: string }, default: { type: string }, required: { type: boolean } }
+        budget_usd: { type: number }
+        area_ids: { type: array, items: { type: string, format: uuid }, minItems: 1 }
+    Schedule:
+      type: object
+      required: [name, crew_id, cron]
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        name: { type: string }
+        description: { type: string }
+        crew_id: { type: string, format: uuid, description: "The crew it runs; to run one task, make a crew with just that task" }
+        cron: { type: string, examples: ["0 9 * * 1-5", "@daily"] }
+        timezone: { type: string, examples: [Europe/London] }
+        brief: { type: string }
+        inputs: { type: object, additionalProperties: { type: string } }
+        budget_usd: { type: [number, "null"] }
+        enabled: { type: boolean }
+        overlap_policy: { type: string, enum: [skip, allow] }
+        next_run_at: { type: [string, "null"], format: date-time, readOnly: true }
+    Trigger:
+      type: object
+      required: [name, crew_id]
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        name: { type: string }
+        description: { type: string }
+        crew_id: { type: string, format: uuid, description: "The crew it runs; to run one task, make a crew with just that task" }
+        enabled: { type: boolean }
+        input_map: { type: object, additionalProperties: { type: string }, examples: [{ company: customer.name }] }
+        brief: { type: string }
+        include_payload: { type: boolean }
+        budget_usd: { type: [number, "null"] }
+        callback_url: { type: [string, "null"], format: uri }
+        token: { type: string, readOnly: true, description: Only in the create and rotate responses }
+    UserInput:
+      type: object
+      required: [kind, name]
+      properties:
+        kind: { type: string, enum: [human, service] }
+        email: { type: string, format: email }
+        name: { type: string }
+        status: { type: string, enum: [active, disabled] }
+        all_areas: { type: boolean }
+        area_ids: { type: array, items: { type: string, format: uuid } }
+        role_ids: { type: array, items: { type: string, format: uuid } }
+        permissions: { type: array, items: { type: string } }
+    Role:
+      type: object
+      required: [name, permissions]
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        name: { type: string }
+        description: { type: string }
+        permissions: { type: array, items: { type: string } }
+    Area:
+      type: object
+      required: [name]
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        name: { type: string }
+        description: { type: string }
+    WorkOrderInput:
+      type: object
+      required: [title, crew_id]
+      properties:
+        title: { type: string, maxLength: 200 }
+        brief: { type: string, maxLength: 100000, description: Markdown instructions given to every task }
+        crew_id: { type: string, format: uuid, description: "The crew to run; to run one task, make a crew with just that task (GET /tasks/{id}/crew-draft)" }
+        inputs: { type: object, additionalProperties: { type: string } }
+        budget_usd: { type: [number, "null"], exclusiveMinimum: 0, maximum: 1000 }
+        submit: { type: boolean, description: Start it straight away }
+        callback_url: { type: string, format: uri, description: "POSTed (signed) when the run finishes; service accounts only" }
+    WorkOrder:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        number: { type: integer, description: Shown as WO-<number> }
+        title: { type: string }
+        brief: { type: string }
+        crew_id: { type: [string, "null"], format: uuid, description: "Null once the crew is deleted; target_name keeps its name" }
+        target_name: { type: string }
+        status: { type: string, enum: [draft, queued, running, succeeded, failed, cancelled] }
+        current_run_id: { type: [string, "null"], format: uuid }
+        cost_usd: { type: [number, "null"] }
+        source: { type: string, enum: [manual, api, schedule, webhook] }
+        created_at: { type: string, format: date-time }
+        attachments: { type: array, items: { $ref: "#/components/schemas/Attachment" } }
+        runs: { type: array, items: { $ref: "#/components/schemas/Run" } }
+    Attachment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [input, artifact, transcript] }
+        filename: { type: string }
+        content_type: { type: string }
+        size_bytes: { type: integer }
+        sha256: { type: string }
+        created_at: { type: string, format: date-time }
+    Journal:
+      type: object
+      properties:
+        run_id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        agents: { type: array, items: { type: object } }
+        tasks: { type: array, items: { type: object } }
+        entries:
+          type: array
+          items:
+            type: object
+            properties:
+              seq: { type: integer }
+              at: { type: string, format: date-time }
+              agent_role: { type: string }
+              task_name: { type: string }
+              kind: { type: string }
+              title: { type: string }
+              body: { type: string }
+              cost_usd: { type: number }
+        truncated: { type: boolean }
+    HookAccepted:
+      type: object
+      properties:
+        work_order_id: { type: string, format: uuid }
+        number: { type: integer }
+        run_id: { type: string, format: uuid }
+        status: { type: string }
+        status_url: { type: string }
+    CallbackPayload:
+      type: object
+      description: |
+        Sent to callback URLs. Verify X-CrewStudio-Signature: "sha256=" + hex(HMAC-SHA256(secret,
+        "<X-CrewStudio-Timestamp>.<raw body>")), and reject timestamps older than 5 minutes.
+      properties:
+        event: { const: run.finished }
+        delivered_at: { type: string, format: date-time }
+        run: { $ref: "#/components/schemas/Run" }
+        work_order:
+          type: [object, "null"]
+          properties:
+            id: { type: string, format: uuid }
+            number: { type: integer }
+            title: { type: string }
+    Connection:
+      type: object
+      description: A connection as returned by the API. Secret values are never included; secret_keys lists which are set.
+      properties:
+        id: { type: string, format: uuid, readOnly: true }
+        name: { type: string }
+        kind: { type: string, enum: [jira, linear, km2_tracker, km2, http, mcp, slack, teams, email] }
+        config: { type: object, additionalProperties: { type: string }, description: "Non-secret settings, such as site_url; see GET /connections/kinds" }
+        secret_keys: { type: array, items: { type: string }, readOnly: true }
+        missing_secrets: { type: array, items: { type: string }, readOnly: true }
+        secret_updated_at: { type: [string, "null"], format: date-time, readOnly: true }
+        area_ids: { type: array, items: { type: string, format: uuid }, minItems: 1 }
+        enabled: { type: boolean }
+        crew_count: { type: integer, readOnly: true }
+    ConnectionInput:
+      type: object
+      required: [name, kind, area_ids]
+      properties:
+        name: { type: string }
+        kind: { type: string, enum: [jira, linear, km2_tracker, km2, http, mcp, slack, teams, email], description: "Cannot change after creation. mcp is an outside MCP server (Streamable HTTP; config url and auth_header, secret auth_value) whose reading tools agents may use in chat; not Studio's own MCP endpoint" }
+        config: { type: object, additionalProperties: { type: string } }
+        area_ids: { type: array, items: { type: string, format: uuid }, minItems: 1 }
+        enabled: { type: boolean, default: true }
+        secrets: { type: object, additionalProperties: { type: string, format: password }, description: "Only when creating; later use PUT /connections/{id}/secret" }
+    ConnectionTool:
+      type: object
+      description: "A tool of an MCP connection, as Discover tools last found it. name, description and input_schema are the MCP server's own words (untrusted)."
+      properties:
+        connection_id: { type: string, format: uuid }
+        name: { type: string, pattern: "^[A-Za-z0-9_.-]{1,128}$" }
+        description: { type: string, maxLength: 4000 }
+        input_schema: { type: object, description: "The tool's JSON Schema for its arguments (at most 16 KB)" }
+        effect: { type: string, enum: [reads, changes], description: "From the server's readOnlyHint on discovery; agent chat uses only enabled tools that read" }
+        enabled: { type: boolean }
+        discovered_at: { type: string, format: date-time }
+        updated_by_name: { type: string }
+        updated_at: { type: string, format: date-time }
+    NoteVersion:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        schedule_id: { type: [string, "null"], format: uuid, description: "null: crew-wide" }
+        subject: { type: string, examples: ["project:atlas"] }
+        name: { type: string, examples: [weekly-report] }
+        version: { type: integer }
+        content: { type: string, maxLength: 65536 }
+        run_id: { type: [string, "null"], format: uuid }
+        written_by: { type: string, description: "run, or the name of the person who edited it" }
+        created_at: { type: string, format: date-time }
+    NotePut:
+      type: object
+      required: [content]
+      properties:
+        subject: { type: string, maxLength: 200 }
+        content: { type: string, description: At most 64 KB }
+        expected_version: { type: integer, minimum: 0, description: "Refuse the write (409 version_conflict) unless the note is at this version; 0 means it must not exist yet" }
+    ActionEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        schedule_id: { type: [string, "null"], format: uuid }
+        schedule_name: { type: string }
+        subject: { type: string, examples: ["jira:PRJ-15"] }
+        action: { type: string, examples: ["followup:due_soon"] }
+        run_id: { type: [string, "null"], format: uuid }
+        dry_run: { type: boolean }
+        details: { type: object }
+        idempotency_key: { type: [string, "null"] }
+        at: { type: string, format: date-time }
+    LogRecord:
+      type: object
+      required: [subject, action]
+      properties:
+        subject: { type: string, maxLength: 200 }
+        action: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$" }
+        details: { type: object, description: At most 16 KB as JSON }
+        idempotency_key: { type: string, maxLength: 200, description: Recording the same key twice for a crew adds nothing }
+    WatchSource:
+      type: object
+      required: [kind]
+      description: Where a watch reads its items. Fields apply per kind.
+      properties:
+        kind: { type: string, enum: [http_json, web_page, workspace_file, tracker, tracking_list] }
+        path: { type: string, description: "http_json: path and query added to the connection's base URL, such as /issues?state=open" }
+        items_path: { type: string, description: "http_json and JSON files: dotted path to the array of items; empty for a top-level array" }
+        url: { type: string, description: "web_page: a public http(s) page" }
+        selector: { type: string, description: "web_page: optional CSS selector; only the matching text is compared" }
+        file: { type: string, description: "workspace_file: a path in the Studio workspace's watch/ folder" }
+        format: { type: string, enum: [csv, json], description: "workspace_file: default from the file's extension" }
+        project: { type: string, description: "tracker: the Jira project key or Linear team key, such as PRJ" }
+        jql: { type: string, maxLength: 1000, description: "tracker, Jira only: an extra JQL clause ANDed in (no ORDER BY)" }
+        include_done: { type: boolean, description: "tracker: also done and canceled issues" }
+        lead: { type: string, description: "tracker: who 'lead' follow-ups notify instead of the project lead (a tracker account id)" }
+        comments: { type: boolean, description: "tracker and tracking_list: also report new comments (500 characters each, 50 per check; the connection's own comments are left out)" }
+        stale_days: { type: integer, minimum: 1, maximum: 365, default: 14, description: "tracker and tracking_list: an open child with no update for this long is stale in roll-ups" }
+    FollowupLadder:
+      type: object
+      required: [date_field, steps]
+      properties:
+        date_field: { type: string, description: One of the tracked fields }
+        skip_when: { type: object, additionalProperties: { type: array, items: { type: string } }, description: "Tracked field to values (ignoring case) that leave an item out, such as {status: [Done]}" }
+        steps:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            required: [name, offset, notify]
+            properties:
+              name: { type: string, pattern: "^[a-z0-9][a-z0-9_-]{0,49}$", examples: [due_soon] }
+              offset: { type: string, examples: ["-3d", "0d", "+2d", "1w"] }
+              notify: { type: string, description: "owner, lead, or a tracked field holding the person" }
+              repeat: { type: string, examples: [7d], description: Due again once this long has passed since it was last recorded }
+        quiet_days: { type: array, items: { type: string, enum: [Mon, Tue, Wed, Thu, Fri, Sat, Sun] } }
+        timezone: { type: string, description: "Empty: the schedule's time zone" }
+        max_per_tick: { type: integer, minimum: 1, maximum: 200, default: 25 }
+    WatchInput:
+      type: object
+      required: [source]
+      properties:
+        connection_id: { type: [string, "null"], format: uuid, description: "http_json: an enabled http connection the crew may use; tracker: a Jira or Linear one. tracking_list reads each tracked item's own connection." }
+        source: { $ref: "#/components/schemas/WatchSource" }
+        id_field: { type: string, description: "Dotted path (or CSV column) identifying each item; ignored for web pages; always key for trackers (items are jira:PRJ-15)" }
+        tracked_fields: { type: array, items: { type: string }, maxItems: 30, description: "Fields to compare; ignored for web pages (their text is compared). Trackers: title, status, status_category, assignee, due_date, priority, updated_at, parent, labels (default status, assignee, due_date, priority)" }
+        run_when: { type: string, enum: [changed, always, changed_or_followups], default: changed }
+        followups: { oneOf: [{ $ref: "#/components/schemas/FollowupLadder" }, { type: "null" }] }
+        dry_run: { type: boolean, default: true }
+        max_items: { type: integer, minimum: 1, maximum: 10000, default: 2000, description: More items than this fail the check instead of being cut }
+        mention_cap_per_day: { type: integer, minimum: 1, maximum: 50, default: 3, description: "Tracker tools: how often the crew may mention one person in 24 hours" }
+        comment_cap_per_run: { type: integer, minimum: 1, maximum: 500, default: 30, description: "Tracker tools: how many comments one run may post" }
+    Watch:
+      allOf:
+        - { $ref: "#/components/schemas/WatchInput" }
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            schedule_id: { type: string, format: uuid }
+            schedule_name: { type: string }
+            crew_id: { type: [string, "null"], format: uuid }
+            connection_name: { type: string }
+            last_checked_at: { type: [string, "null"], format: date-time }
+            last_changed_at: { type: [string, "null"], format: date-time }
+            last_error: { type: [string, "null"] }
+            snapshot_at: { type: [string, "null"], format: date-time, description: "null: the next check is the first" }
+            snapshot_items: { type: integer }
+    WatchView:
+      type: object
+      properties:
+        watch: { oneOf: [{ $ref: "#/components/schemas/Watch" }, { type: "null" }] }
+        stats:
+          type: [object, "null"]
+          description: Last 30 days
+          properties:
+            days: { type: integer }
+            checks: { type: integer }
+            runs_started: { type: integer }
+            runs_skipped: { type: integer }
+            avg_run_tokens: { type: integer }
+            est_tokens_saved: { type: integer }
+            est_cost_saved_usd: { type: number }
+        checks:
+          type: array
+          description: The 20 most recent checks, newest first
+          items:
+            type: object
+            properties:
+              checked_at: { type: string, format: date-time }
+              outcome: { type: string, enum: [started, no_changes, busy, error] }
+              added: { type: integer }
+              changed: { type: integer }
+              removed: { type: integer }
+              unchanged: { type: integer }
+              followups_due: { type: integer }
+              work_order_id: { type: [string, "null"], format: uuid }
+              message: { type: string }
+        source_kinds: { type: array, items: { type: object } }
+        connections: { type: array, description: "Connections the crew may use for a watch (schedules.manage only)", items: { type: object } }
+    WatchPreview:
+      type: object
+      description: What a check would see now. Nothing is saved or started.
+      properties:
+        changes: { type: object, description: "{ source, checked_at, previous_check_at, added, changed, removed, new_comments, new_comments_omitted, unchanged_count }" }
+        followups_due: { type: [object, "null"], description: "{ due: [...], more_waiting, dry_run, how_to_record }; tracker items' steps name notify_person { account_id, name, studio_user }" }
+        rollups: { type: object, description: "tracking_list only: { items: [{ item, title, project, connection, due_date, children: { total, done, in_progress, to_do, canceled }, overdue, due_after_parent, blocked, unassigned, stale, new_comments, changed_since_last_check }], stale_days }. Runs get only the changed items as the rollups input." }
+        would_run: { type: boolean }
+        reason: { type: string }
+        item_count: { type: integer }
+        sample: { type: array, items: { type: object }, description: Up to 5 items as fetched }
+paths:
+  /auth/me:
+    get:
+      tags: [Sign-in]
+      summary: Who the key belongs to, with its permissions and functional areas
+      responses:
+        "200": { description: The principal }
+        "401": { $ref: "#/components/responses/Error" }
+  /account/api-keys:
+    get:
+      tags: [Account]
+      summary: Your API keys, active first then newest (the secrets are never returned again)
+      parameters:
+        - { $ref: "#/components/parameters/limit" }
+        - { $ref: "#/components/parameters/offset" }
+        - { name: q, in: query, schema: { type: string, maxLength: 200 }, description: "Matches key name, account name or prefix" }
+        - { name: kind, in: query, schema: { type: string, enum: [human, service] } }
+        - { name: status, in: query, schema: { type: string, enum: [active, expired, revoked] } }
+      responses: { "200": { description: "Page of keys (with meta: total, limit, offset)" } }
+    post:
+      tags: [Account]
+      summary: Create a key that acts as you (account.api_keys; the secret is shown once)
+      description: >-
+        Needs a signed-in session: a request made with an API key is refused, so a key cannot create more keys.
+        An account holds at most 20 active keys.
+      requestBody: { content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string, maxLength: 120 }, expires_at: { type: [string, "null"], format: date-time } } } } } }
+      responses:
+        "201": { description: "{ key, secret }" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /account/api-keys/{keyId}:
+    delete:
+      tags: [Account]
+      summary: Revoke one of your keys
+      parameters: [{ name: keyId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { "204": { description: Revoked }, "404": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/runs:
+    post:
+      tags: [Crews]
+      summary: Run a crew directly (crews.run)
+      parameters: [{ $ref: "#/components/parameters/id" }, { $ref: "#/components/parameters/idempotencyKey" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                inputs: { type: object, additionalProperties: { type: string } }
+                budget_usd: { type: number }
+                callback_url: { type: string, format: uri }
+      responses:
+        "201": { description: Queued run, content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
+        "200": { description: Earlier run with the same Idempotency-Key }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /work-orders:
+    get:
+      tags: [Work orders]
+      summary: List work orders (work_orders.view)
+      parameters:
+        - { $ref: "#/components/parameters/limit" }
+        - { $ref: "#/components/parameters/offset" }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: source, in: query, schema: { type: string } }
+        - { name: crew_id, in: query, schema: { type: string, format: uuid } }
+        - { name: q, in: query, schema: { type: string } }
+      responses:
+        "200": { description: Page of work orders }
+    post:
+      tags: [Work orders]
+      summary: Create (and optionally submit) a work order (work_orders.create)
+      parameters: [{ $ref: "#/components/parameters/idempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkOrderInput" }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/WorkOrder" } } } }
+        "422": { $ref: "#/components/responses/Error" }
+  /work-orders/{id}:
+    get:
+      tags: [Work orders]
+      summary: A work order with its input files and every attempt
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses:
+        "200": { description: Work order, content: { application/json: { schema: { $ref: "#/components/schemas/WorkOrder" } } } }
+        "404": { $ref: "#/components/responses/Error" }
+    put:
+      tags: [Work orders]
+      summary: Edit a work order (not while queued or running); applies to the next submit
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/WorkOrderInput" } } } }
+      responses: { "200": { description: Updated }, "409": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Work orders]
+      summary: Delete with every run and file (work_orders.delete)
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "204": { description: Deleted }, "409": { $ref: "#/components/responses/Error" } }
+  /work-orders/{id}/attachments:
+    post:
+      tags: [Work orders]
+      summary: Attach files (multipart, field "file"; send X-Requested-With crewstudio)
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: X-Requested-With, in: header, required: true, schema: { const: crewstudio } }
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: array, items: { type: string, format: binary } }
+      responses:
+        "201": { description: Stored files }
+        "413": { $ref: "#/components/responses/Error" }
+        "415": { $ref: "#/components/responses/Error" }
+  /work-orders/{id}/submit:
+    post:
+      tags: [Work orders]
+      summary: Start a new attempt (work_orders.create)
+      parameters: [{ $ref: "#/components/parameters/id" }, { $ref: "#/components/parameters/idempotencyKey" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                budget_usd: { type: number }
+                callback_url: { type: string, format: uri }
+      responses:
+        "201": { description: Queued run }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /work-orders/{id}/cancel:
+    post:
+      tags: [Work orders]
+      summary: Stop the current attempt (work_orders.cancel)
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses:
+        "200": { description: The run }
+  /work-orders/{id}/journal:
+    get:
+      tags: [Work orders]
+      summary: What each agent did on each task
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: run_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Journal, content: { application/json: { schema: { $ref: "#/components/schemas/Journal" } } } }
+  /runs/{id}:
+    get:
+      tags: [Runs]
+      summary: A run with its outputs and frozen spec
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses:
+        "200": { description: Run, content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
+    delete:
+      tags: [Runs]
+      summary: Delete a finished run with its events and files (runs.delete)
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "204": { description: Deleted }, "409": { $ref: "#/components/responses/Error" } }
+  /runs/{id}/events:
+    get:
+      tags: [Runs]
+      summary: Run events after a sequence number (poll), or use /runs/{id}/stream for Server-Sent Events
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: after, in: query, schema: { type: integer, minimum: 0 } }
+      responses:
+        "200": { description: Events }
+  /runs/{id}/artifacts:
+    get:
+      tags: [Runs]
+      summary: Files the agents wrote, plus the full transcript and console log
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses:
+        "200": { description: Files, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Attachment" } } } } }
+  /attachments/{id}/content:
+    get:
+      tags: [Work orders]
+      summary: Download a stored file
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses:
+        "200": { description: File bytes }
+  /hooks/{id}:
+    post:
+      tags: [Triggers]
+      summary: Fire a webhook trigger (creates and submits a work order)
+      security: [{ triggerToken: [] }]
+      parameters: [{ $ref: "#/components/parameters/id" }, { $ref: "#/components/parameters/idempotencyKey" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, description: Any JSON up to 1 MB; mapped to inputs by the trigger's input map }
+      responses:
+        "202": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/HookAccepted" } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /crews:
+    get:
+      tags: [Crews]
+      summary: List (crews.view)
+      responses: { "200": { description: List } }
+    post:
+      tags: [Crews]
+      summary: Create
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Crew" } } } }
+      responses: { "201": { description: Created }, "422": { $ref: "#/components/responses/Error" } }
+  /crews/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Crews]
+      summary: Get one
+      responses: { "200": { description: The item }, "404": { $ref: "#/components/responses/Error" } }
+    put:
+      tags: [Crews]
+      summary: Replace
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Crew" } } } }
+      responses: { "200": { description: Updated }, "422": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Crews]
+      summary: Delete
+      responses: { "204": { description: Deleted }, "409": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/validate:
+    get:
+      tags: [Crews]
+      summary: Reasons the crew cannot run yet (empty when it can)
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "{ valid, errors, warnings }: warnings do not stop a run, such as an LLM whose provider key is not set" } }
+  /agents:
+    get:
+      tags: [Agents]
+      summary: List (agents.view)
+      responses: { "200": { description: List } }
+    post:
+      tags: [Agents]
+      summary: Create
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Agent" } } } }
+      responses: { "201": { description: Created }, "422": { $ref: "#/components/responses/Error" } }
+  /agents/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Agents]
+      summary: Get one
+      responses: { "200": { description: The item }, "404": { $ref: "#/components/responses/Error" } }
+    put:
+      tags: [Agents]
+      summary: Replace
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Agent" } } } }
+      responses: { "200": { description: Updated }, "422": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Agents]
+      summary: Delete
+      responses: { "204": { description: Deleted }, "409": { $ref: "#/components/responses/Error" } }
+  /tasks:
+    get:
+      tags: [Tasks]
+      summary: List (tasks.view)
+      responses: { "200": { description: List } }
+    post:
+      tags: [Tasks]
+      summary: Create
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Task" } } } }
+      responses: { "201": { description: Created }, "422": { $ref: "#/components/responses/Error" } }
+  /tasks/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Tasks]
+      summary: Get one
+      responses: { "200": { description: The item }, "404": { $ref: "#/components/responses/Error" } }
+    put:
+      tags: [Tasks]
+      summary: Replace
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Task" } } } }
+      responses: { "200": { description: Updated }, "422": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Tasks]
+      summary: Delete
+      responses: { "204": { description: Deleted }, "409": { $ref: "#/components/responses/Error" } }
+  /tasks/{id}/crew-draft:
+    get:
+      tags: [Tasks]
+      summary: An unsaved crew that runs just this task (tasks.view and crews.create)
+      description: >-
+        The task, the tasks it takes context from (earlier tasks first) and their agents, with an input for every
+        placeholder, named after the task. Work orders, schedules and triggers run crews, so POST this to /crews to
+        run a single task.
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses:
+        "200": { description: "A crew body ready for POST /crews", content: { application/json: { schema: { $ref: "#/components/schemas/Crew" } } } }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /schedules:
+    get:
+      tags: [Schedules]
+      summary: List (schedules.view)
+      responses: { "200": { description: List } }
+    post:
+      tags: [Schedules]
+      summary: Create
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Schedule" } } } }
+      responses: { "201": { description: Created }, "422": { $ref: "#/components/responses/Error" } }
+  /schedules/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Schedules]
+      summary: Get one
+      responses: { "200": { description: The item }, "404": { $ref: "#/components/responses/Error" } }
+    put:
+      tags: [Schedules]
+      summary: Replace
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Schedule" } } } }
+      responses: { "200": { description: Updated }, "422": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Schedules]
+      summary: Delete
+      responses: { "204": { description: Deleted }, "409": { $ref: "#/components/responses/Error" } }
+  /schedules/preview:
+    post:
+      tags: [Schedules]
+      summary: Next 5 times a cron expression fires
+      requestBody: { content: { application/json: { schema: { type: object, properties: { cron: { type: string }, timezone: { type: string } } } } } }
+      responses: { "200": { description: "{ next: [...] }" }, "422": { $ref: "#/components/responses/Error" } }
+  /schedules/{id}/run-now:
+    post:
+      tags: [Schedules]
+      summary: Create a work order from the schedule now
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "201": { description: The work order } }
+  /schedules/{id}/watch:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Schedules]
+      summary: The schedule's watch with its recent checks and 30-day savings (schedules.view); watch is null when there is none
+      responses: { "200": { description: The watch view, content: { application/json: { schema: { $ref: "#/components/schemas/WatchView" } } } }, "404": { $ref: "#/components/responses/Error" } }
+    put:
+      tags: [Schedules]
+      summary: Create or replace the watch (schedules.manage); a different source, id or fields drops the snapshot
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/WatchInput" } } } }
+      responses: { "200": { description: The watch view }, "422": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Schedules]
+      summary: Remove the watch with its snapshot and check history (schedules.manage)
+      responses: { "204": { description: Removed }, "404": { $ref: "#/components/responses/Error" } }
+  /schedules/{id}/watch/preview:
+    post:
+      tags: [Schedules]
+      summary: Fetch the source of this definition now and show the changes and due follow-ups (schedules.manage); changes nothing
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/WatchInput" } } } }
+      responses:
+        "200": { description: The preview, content: { application/json: { schema: { $ref: "#/components/schemas/WatchPreview" } } } }
+        "422": { description: "Invalid definition, or the source could not be read (code source_failed)" }
+        "429": { $ref: "#/components/responses/Error" }
+  /schedules/{id}/watch/snapshot:
+    delete:
+      tags: [Schedules]
+      summary: Clear the watch's snapshot so the next check is the first (schedules.manage and state.manage)
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "204": { description: Cleared }, "404": { $ref: "#/components/responses/Error" } }
+  /schedules/{id}/report-destinations:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Schedules]
+      summary: "Where the reports of this schedule's runs go besides the work order (schedules.view). connections lists the slack, teams, email and km2 connections the crew may use that share an area with the schedule (only for schedules.manage)."
+      responses: { "200": { description: "{ destinations: [ReportDestination], connections: [{ id, name, kind }], kinds: [slack, teams, email, km2] }" }, "404": { $ref: "#/components/responses/Error" } }
+    put:
+      tags: [Schedules]
+      summary: "Replace the destinations (schedules.manage). At most 10; each needs a connection of its kind that the caller can see, the crew may use (its State tab) and that shares an area with the schedule. Email destinations list 1 to 50 bare addresses; KM2 destinations may name a folder id the connection allows. A connection a destination uses cannot be deleted (409)."
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [destinations], properties: { destinations: { type: array, maxItems: 10, items: { type: object, required: [kind, connection_id], properties: { kind: { type: string, enum: [slack, teams, email, km2] }, connection_id: { type: string, format: uuid }, recipients: { type: array, maxItems: 50, items: { type: string, format: email } }, folder: { type: string } } } } } } } } }
+      responses: { "200": { description: The destinations view }, "422": { $ref: "#/components/responses/Error" } }
+  /triggers:
+    get:
+      tags: [Triggers]
+      summary: List (triggers.view)
+      responses: { "200": { description: List } }
+    post:
+      tags: [Triggers]
+      summary: Create
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Trigger" } } } }
+      responses: { "201": { description: Created }, "422": { $ref: "#/components/responses/Error" } }
+  /triggers/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Triggers]
+      summary: Get one
+      responses: { "200": { description: The item }, "404": { $ref: "#/components/responses/Error" } }
+    put:
+      tags: [Triggers]
+      summary: Replace
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Trigger" } } } }
+      responses: { "200": { description: Updated }, "422": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Triggers]
+      summary: Delete
+      responses: { "204": { description: Deleted }, "409": { $ref: "#/components/responses/Error" } }
+  /triggers/{id}/rotate:
+    post:
+      tags: [Triggers]
+      summary: New token (shown once) and signing secret
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: The trigger with token } }
+  /auth/status:
+    get:
+      tags: [Sign-in]
+      security: []
+      summary: Whether setup is needed and which sign-in methods are configured
+      responses: { "200": { description: Status } }
+  /auth/logout:
+    post:
+      tags: [Sign-in]
+      summary: End this browser session
+      responses: { "204": { description: Signed out } }
+  /overview:
+    get:
+      tags: [Runs]
+      summary: Counts, recent work orders and runs, 30-day spend (in your areas)
+      responses: { "200": { description: Overview } }
+  /runs:
+    get:
+      tags: [Runs]
+      summary: List runs (runs.view); other people's chat turns and hand-offs are left out
+      parameters:
+        - { $ref: "#/components/parameters/limit" }
+        - { $ref: "#/components/parameters/offset" }
+        - { name: crew_id, in: query, schema: { type: string, format: uuid } }
+        - { name: work_order_id, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/RunStatus" } }
+        - { name: trigger_type, in: query, schema: { type: string, enum: [manual, api, schedule, webhook, work_order] } }
+        - { name: kind, in: query, schema: { type: string, enum: [crew, chat, handoff] }, description: "crew runs, chat turns or hand-offs; all when left out" }
+      responses: { "200": { description: Page of runs } }
+  /runs/{id}/cancel:
+    post:
+      tags: [Runs]
+      summary: Stop a queued or running run
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: The run } }
+  /runs/{id}/compact:
+    post:
+      tags: [Runs]
+      summary: "Ask a running crew run to compact its agents' context: each agent's steps so far become a summary before its next LLM call (runs.cancel, or work_orders.cancel for a work order's attempt)"
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        "200": { description: "{ compact_requests }" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { description: "run_not_running, or chat_turn (a chat turn or hand-off)", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /runs/{id}/journal:
+    get:
+      tags: [Runs]
+      summary: What each agent did on each task
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: Journal, content: { application/json: { schema: { $ref: "#/components/schemas/Journal" } } } } }
+  /runs/{id}/interactions:
+    get:
+      tags: [Runs]
+      summary: Graph of crew, tasks, agents, tools and models with stats
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "{ nodes, edges }" } }
+  /runs/{id}/llm-calls:
+    get:
+      tags: [Runs]
+      summary: Every LLM call with its full prompt and response
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: LLM calls } }
+  /runs/{id}/deliveries:
+    get:
+      tags: [Runs]
+      summary: Callback deliveries for the run
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: Deliveries } }
+  /work-orders/{id}/reports:
+    get:
+      tags: [Work orders]
+      summary: "The reports the work order's runs delivered (Deliver Report), oldest first, each with its deliveries: kind (work_order, slack, teams, email, km2), connection, status (sent, would_send, failed, pending), message and attempts, and retryable (how many Retry would send). work_orders.view."
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "{ reports: [Report & { retryable }], retried: 0, sent: 0 }; each report has cadence (weekly or daily), period and snapshot: the project's tracked items Crew Studio read when the report was delivered (KPIs with deltas against the previous report of the same cadence, sections, timeline, status mix, trend), or null when the tracker could not be read" }, "404": { $ref: "#/components/responses/Error" } }
+  /work-orders/{id}/reports/{reportId}/html:
+    get:
+      tags: [Work orders]
+      summary: "One report as a self-contained HTML page (inline CSS and SVG charts, no scripts, no remote assets), sent as an attachment with a Content-Security-Policy that allows nothing but inline styles. The same access as the work order's reports (work_orders.view and the work order's area); otherwise 404. A report without a snapshot renders its Markdown."
+      parameters: [{ $ref: "#/components/parameters/id" }, { name: reportId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { "200": { description: "The report page (text/html)", content: { text/html: { schema: { type: string } } } }, "404": { $ref: "#/components/responses/Error" } }
+  /work-orders/{id}/reports/retry:
+    post:
+      tags: [Work orders]
+      summary: "Retry failed deliveries (work_orders.create): sends only deliveries that failed (or were left pending over 10 minutes), never dry-run reports; deliveries in the action log are not sent again. 6 a minute per person (429). Audited as report_deliveries_retried."
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "{ reports, retried, sent }" }, "404": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" } }
+  /work-orders/{id}/attachments/{attachmentId}:
+    delete:
+      tags: [Work orders]
+      summary: Remove an input file (not while running)
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: attachmentId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses: { "204": { description: Removed }, "409": { $ref: "#/components/responses/Error" } }
+  /llms:
+    get:
+      tags: [Configuration]
+      summary: List (llms.view)
+      responses: { "200": { description: List } }
+    post:
+      tags: [Configuration]
+      summary: Create
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Entity" } } } }
+      responses: { "201": { description: Created }, "422": { $ref: "#/components/responses/Error" } }
+  /llms/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Configuration]
+      summary: Get one
+      responses: { "200": { description: The item }, "404": { $ref: "#/components/responses/Error" } }
+    put:
+      tags: [Configuration]
+      summary: Replace
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Entity" } } } }
+      responses: { "200": { description: Updated }, "422": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Configuration]
+      summary: Delete
+      responses: { "204": { description: Deleted }, "409": { $ref: "#/components/responses/Error" } }
+  /pricing:
+    get:
+      tags: [Configuration]
+      summary: List (pricing.view)
+      responses: { "200": { description: List } }
+    post:
+      tags: [Configuration]
+      summary: Create
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Entity" } } } }
+      responses: { "201": { description: Created }, "422": { $ref: "#/components/responses/Error" } }
+  /pricing/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Configuration]
+      summary: Get one
+      responses: { "200": { description: The item }, "404": { $ref: "#/components/responses/Error" } }
+    put:
+      tags: [Configuration]
+      summary: Replace
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Entity" } } } }
+      responses: { "200": { description: Updated }, "422": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Configuration]
+      summary: Delete
+      responses: { "204": { description: Deleted }, "409": { $ref: "#/components/responses/Error" } }
+  /settings:
+    get:
+      tags: [Configuration]
+      summary: Budget, search, concurrency and context compaction settings
+      responses: { "200": { description: Settings } }
+    put:
+      tags: [Configuration]
+      summary: Replace the settings (settings.manage)
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Entity" } } } }
+      responses: { "200": { description: Settings } }
+  /tools:
+    get:
+      tags: [Configuration]
+      summary: "Tools agents can use: key, name, description, requires_env, priced_model, available, effect and needs. effect is what the tool does outside the run: reads, proposes or changes. needs is what it requires besides keys: crew (crew state), tracker (a Jira, Linear or KM2 issues connection), km2 (a KM2 connection), schedule. In agent chat an agent keeps only tools that read and whose needs the chat meets (an agent has no crew or schedule)."
+      responses: { "200": { description: "[{ key, name, description, requires_env, priced_model?, available, effect, needs }]" } }
+  /history:
+    get:
+      tags: [History]
+      summary: Every change, with who made it
+      parameters:
+        - { $ref: "#/components/parameters/limit" }
+        - { $ref: "#/components/parameters/offset" }
+        - { name: entity_type, in: query, schema: { type: string } }
+        - { name: entity_id, in: query, schema: { type: string } }
+      responses: { "200": { description: Page of revisions } }
+  /help:
+    get:
+      tags: [Help]
+      summary: Table of contents (only articles and sections your permissions cover)
+      responses: { "200": { description: "{ categories: [{ title, articles: [{ slug, title, summary, headings: [{ id, title }] }] }] }" } }
+  /help/articles/{slug}:
+    parameters: [{ name: slug, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,63}$" } }]
+    get:
+      tags: [Help]
+      summary: One article as Markdown sections; sections you lack permissions for are left out
+      responses:
+        "200": { description: "{ slug, title, category, summary, sections: [{ id, title, markdown }] }" }
+        "404": { $ref: "#/components/responses/Error" }
+  /help/search:
+    get:
+      tags: [Help]
+      summary: Search help by meaning (embeddings) and keywords, within what you may see
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 2, maxLength: 200 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 20, default: 8 } }
+      responses:
+        "200": { description: "{ query, mode: semantic | keyword, results: [{ slug, article_title, category, section_id, section_title, snippet, score }] }" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /help/images/{name}:
+    parameters: [{ name: name, in: path, required: true, schema: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,63}\\.(png|jpg|webp)$" } }]
+    get:
+      tags: [Help]
+      summary: A help screenshot, if it appears in a section you may see
+      responses:
+        "200": { description: Image, content: { image/png: {} } }
+        "404": { $ref: "#/components/responses/Error" }
+  /areas:
+    get:
+      tags: [Admin]
+      summary: Functional areas (anyone signed in)
+      responses: { "200": { description: Areas } }
+    post:
+      tags: [Admin]
+      summary: Create an area (admin.areas)
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Area" } } } }
+      responses: { "201": { description: Created } }
+  /areas/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    put:
+      tags: [Admin]
+      summary: Rename an area
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Area" } } } }
+      responses: { "200": { description: Updated } }
+    delete:
+      tags: [Admin]
+      summary: Delete an empty area
+      responses: { "204": { description: Deleted }, "409": { $ref: "#/components/responses/Error" } }
+  /admin/permissions:
+    get:
+      tags: [Admin]
+      summary: The permission catalog
+      responses: { "200": { description: Permissions } }
+  /admin/roles:
+    get:
+      tags: [Admin]
+      summary: List (admin.roles.view)
+      responses: { "200": { description: List } }
+    post:
+      tags: [Admin]
+      summary: Create
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Role" } } } }
+      responses: { "201": { description: Created }, "422": { $ref: "#/components/responses/Error" } }
+  /admin/roles/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Admin]
+      summary: Get one
+      responses: { "200": { description: The item }, "404": { $ref: "#/components/responses/Error" } }
+    put:
+      tags: [Admin]
+      summary: Replace
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/Role" } } } }
+      responses: { "200": { description: Updated }, "422": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Admin]
+      summary: Delete
+      responses: { "204": { description: Deleted }, "409": { $ref: "#/components/responses/Error" } }
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: People (kind=human) or service accounts (kind=service)
+      parameters: [{ name: kind, in: query, schema: { type: string, enum: [human, service] } }]
+      responses: { "200": { description: Users } }
+    post:
+      tags: [Admin]
+      summary: Invite a person or create a service account
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/UserInput" } } } }
+      responses: { "201": { description: Created }, "422": { $ref: "#/components/responses/Error" } }
+  /admin/users/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Admin]
+      summary: One person or service account
+      responses: { "200": { description: User } }
+    put:
+      tags: [Admin]
+      summary: Change roles, areas, permissions or status
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/UserInput" } } } }
+      responses: { "200": { description: Updated }, "403": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Admin]
+      summary: Delete
+      responses: { "204": { description: Deleted } }
+  /admin/api-keys:
+    get:
+      tags: [Admin]
+      summary: Every API key, with its account (people's keys need admin.users, service accounts' need admin.service_accounts)
+      parameters:
+        - { $ref: "#/components/parameters/limit" }
+        - { $ref: "#/components/parameters/offset" }
+        - { name: q, in: query, schema: { type: string, maxLength: 200 }, description: "Matches key name, account name or prefix" }
+        - { name: kind, in: query, schema: { type: string, enum: [human, service] } }
+        - { name: status, in: query, schema: { type: string, enum: [active, expired, revoked] } }
+      responses:
+        "200": { description: "Page of keys with user_name, user_kind, created_by_name and can_revoke (false when the owner holds something you do not)" }
+        "422": { $ref: "#/components/responses/Error" }
+  /admin/users/{id}/api-keys:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Admin]
+      summary: A person's or service account's API keys
+      parameters:
+        - { $ref: "#/components/parameters/limit" }
+        - { $ref: "#/components/parameters/offset" }
+        - { name: q, in: query, schema: { type: string, maxLength: 200 }, description: "Matches key name, account name or prefix" }
+        - { name: kind, in: query, schema: { type: string, enum: [human, service] } }
+        - { name: status, in: query, schema: { type: string, enum: [active, expired, revoked] } }
+      responses: { "200": { description: Page of keys with can_revoke } }
+    post:
+      tags: [Admin]
+      summary: Issue a service account an API key (the secret is shown once; people create their own)
+      requestBody: { content: { application/json: { schema: { type: object, properties: { name: { type: string }, expires_at: { type: [string, "null"], format: date-time } } } } } }
+      responses: { "201": { description: "{ key, secret }" } }
+  /admin/access:
+    get:
+      tags: [Admin]
+      summary: Sign-in settings (auto-provisioning, callback host allow-list)
+      responses: { "200": { description: Settings } }
+    put:
+      tags: [Admin]
+      summary: Change sign-in settings (admin.access)
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/Entity" } } } }
+      responses: { "200": { description: Settings } }
+  /admin/audit:
+    get:
+      tags: [Admin]
+      summary: Sign-ins, sign-in failures, and API keys created, revoked or refused (secrets are never recorded)
+      parameters: [{ $ref: "#/components/parameters/limit" }, { $ref: "#/components/parameters/offset" }]
+      responses: { "200": { description: Page of events } }
+  /admin/users/{id}/password:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    put:
+      tags: [Admin]
+      summary: Set an administrator's local password (12-72 characters)
+      requestBody: { content: { application/json: { schema: { type: object, properties: { password: { type: string, format: password } } } } } }
+      responses: { "204": { description: Set }, "403": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Admin]
+      summary: Remove the local password
+      responses: { "204": { description: Removed } }
+  /admin/users/{id}/sessions/revoke:
+    post:
+      tags: [Admin]
+      summary: Sign someone out everywhere
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "{ ended }" } }
+  /admin/users/{id}/api-keys/{keyId}:
+    delete:
+      tags: [Admin]
+      summary: Revoke a person's or service account's API key
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: keyId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses: { "204": { description: Revoked } }
+  /admin/users/{id}/signing-secret:
+    get:
+      tags: [Admin]
+      summary: The service account's callback signing secret
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "{ signing_secret }" } }
+  /admin/users/{id}/signing-secret/rotate:
+    post:
+      tags: [Admin]
+      summary: Replace the signing secret
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "{ signing_secret }" } }
+  /pmo/setup:
+    get:
+      tags: [Crews]
+      summary: "What the PMO setup wizard offers (crews.create, crews.edit, agents.create, tasks.create, schedules.manage, work_orders.create and connections.view): enabled Jira and Linear connections (trackers) and slack, teams, email and km2 connections (destinations) the caller can see, with their areas; every LLM; the template agents' LLMs as suggestions; the two cron expressions. 409 pmo_template_missing without the PMO template (migration 0016)."
+      responses: { "200": { description: "{ trackers, destinations, llms: [{ id, name, kind, area_ids? }], coordinator_llm_id, reporter_llm_id, sweep_cron, report_cron, ladder }" }, "403": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" } }
+    post:
+      tags: [Crews]
+      summary: "Set up a PMO in one transaction (same permissions): copies the PMO template's two agents and tasks into area_ids (named after name), makes the crew with the tracker and destination connections and chat on (the coordinator is the front desk), and two schedules running as the caller in timezone: <name>: daily sweep (0 7 * * 1-5; tracking_list watch, changed_or_followups, the default follow-up ladder, dry run on) and <name>: weekly report (0 8 * * 1; run always, dry run on, the report destinations). Each schedule's run_tasks input names its task. A name already in use fails the whole setup (409). Audited as pmo_installed."
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [area_ids, tracker_connection_id, timezone], properties: { name: { type: string, maxLength: 80, default: PMO }, area_ids: { type: array, items: { type: string, format: uuid } }, tracker_connection_id: { type: string, format: uuid }, timezone: { type: string, example: America/Denver }, coordinator_llm_id: { type: string, nullable: true }, reporter_llm_id: { type: string, nullable: true }, destinations: { type: array, items: { type: object } }, enabled: { type: boolean, default: true } } } } } }
+      responses: { "201": { description: "{ crew, agents, tasks, schedules }" }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" } }
+  /connections:
+    get:
+      tags: [Connections]
+      summary: Connections in your areas (connections.view); never their secrets
+      responses: { "200": { description: List of Connection } }
+    post:
+      tags: [Connections]
+      summary: Create, with its secrets (connections.manage); 409 secrets_key_missing when the server has no STUDIO_SECRETS_KEY
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ConnectionInput" } } } }
+      responses: { "201": { description: The Connection }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" } }
+  /connections/kinds:
+    get:
+      tags: [Connections]
+      summary: The settings and secrets each kind needs, and whether the server can store secrets
+      responses: { "200": { description: "{ kinds, secrets_ready }" } }
+  /connections/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Connections]
+      summary: Get one
+      responses: { "200": { description: The Connection }, "404": { $ref: "#/components/responses/Error" } }
+    put:
+      tags: [Connections]
+      summary: "Change name, settings, areas and enabled (connections.manage, all of its areas). The kind stays; a new URL, host, port or auth header clears the secrets"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ConnectionInput" } } } }
+      responses: { "200": { description: Updated }, "422": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Connections]
+      summary: Delete, with its secrets
+      responses: { "204": { description: Deleted } }
+  /connections/{id}/secret:
+    put:
+      tags: [Connections]
+      summary: Replace every secret field (connections.manage); the values are never returned
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { secrets: { type: object, additionalProperties: { type: string, format: password } } } } } } }
+      responses: { "200": { description: The Connection }, "422": { $ref: "#/components/responses/Error" } }
+  /connections/{id}/test:
+    post:
+      tags: [Connections]
+      summary: Try to reach the system. Jira and Linear report which account the credentials belong to. Slack and Teams post a test message to the channel; email sends one to the person testing (or the from address), never anyone else (6 test messages a minute per person). KM2 lists the folders the key can see (GET /api/v1/knowledge/folders, which needs knowledge:read) and warns about save folders the key cannot see. MCP connects and counts the server's tools without keeping them (Discover tools keeps them).
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "{ supported, ok, message, status_code, duration_ms } plus, for KM2, { folders: [{ id, name, path, parent_id }] (first 200), folder_count, warnings }" }, "429": { $ref: "#/components/responses/Error" } }
+  /connections/{id}/km2/folders:
+    get:
+      tags: [Connections]
+      summary: "KM2 connections: every folder the saved key can see, with the folders the connection allows, for folder pickers (the connection in your areas, and connections.view or schedules.manage; the same budget as Test). A key without knowledge:read, or a KM2 failure, answers ok false with a message."
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "{ ok, message, status_code, folders: [{ id, name, path, parent_id }], folder_count, allowed: { default_folder_id, write_folder_ids }, warnings }" }, "404": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" } }
+  /connections/{id}/tools:
+    get:
+      tags: [Connections]
+      summary: "MCP connections: the tools Discover tools last found, with their effects (connections.view; 422 not_mcp for other kinds)"
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "[ConnectionTool]", content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/ConnectionTool" } } } } }, "404": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" } }
+    put:
+      tags: [Connections]
+      summary: "MCP connections: set the effect (reads or changes) and enabled flag of the named tools; others stay as they are, and an unknown name refuses the whole change (connections.manage, all of the connection's areas)"
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [tools], properties: { tools: { type: array, maxItems: 200, items: { type: object, required: [name, effect, enabled], properties: { name: { type: string }, effect: { type: string, enum: [reads, changes] }, enabled: { type: boolean } } } } } } } } }
+      responses: { "200": { description: "[ConnectionTool]" }, "403": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" } }
+  /connections/{id}/tools/discover:
+    post:
+      tags: [Connections]
+      summary: "MCP connections: ask the server for its tools (tools/list, with the stored secret) and keep them. A tool whose description and input schema are unchanged keeps its effect and enabled flag. On the first discovery a tool takes reads when the server's readOnlyHint says so, changes otherwise; later, new and changed tools start as changes and are listed in review. Tools the server no longer lists are removed; names outside [A-Za-z0-9_.-]{1,128}, schemas over 16 KB and tools past 200 are skipped. 10 a minute per person, with Test (connections.manage, all of the connection's areas)."
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "{ tools: [ConnectionTool], found, skipped: [string], review: [string] }" }, "403": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" }, "502": { description: "mcp_failed: the server could not be reached, refused the credentials, redirected, timed out (25 s) or answered with an error (its message, untrusted, in details)" } }
+  /connections/{id}/people:
+    get:
+      tags: [Connections]
+      summary: "Jira and Linear connections: the people map (tracker accounts and the Studio users they are linked to), with the users that can be linked (connections.view)"
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "{ people: [TrackerPerson], users: [{ id, name, email }] }" }, "404": { $ref: "#/components/responses/Error" } }
+  /connections/{id}/people/sync:
+    post:
+      tags: [Connections]
+      summary: Read the tracker's people into the people map and link them to Studio users by email (connections.manage; in all the connection's areas)
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "{ people, users, read, linked }" }, "502": { $ref: "#/components/responses/Error" } }
+  /connections/{id}/people/{accountId}:
+    put:
+      tags: [Connections]
+      summary: Link a tracker account to a Studio user by hand, or clear the link with null (connections.manage); a hand-made link is never changed by a sync
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: accountId, in: path, required: true, schema: { type: string } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { user_id: { type: [string, "null"], format: uuid } } } } } }
+      responses: { "200": { description: The TrackerPerson }, "404": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/connections:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Crew state]
+      summary: Connections the crew's tools may use (connections.view; only those in your areas)
+      responses: { "200": { description: List of Connection } }
+    put:
+      tags: [Crew state]
+      summary: Set them (crews.edit and connections.view); links to connections outside your areas are kept
+      requestBody: { content: { application/json: { schema: { type: object, properties: { connection_ids: { type: array, items: { type: string, format: uuid } } } } } } }
+      responses: { "200": { description: List of Connection }, "422": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/state/notes:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Crew state]
+      summary: Latest version of each note, without content (state.view)
+      parameters:
+        - { name: schedule_id, in: query, schema: { type: string }, description: "Empty: all; none: crew-wide; or a schedule's id" }
+        - { name: subject, in: query, schema: { type: string } }
+      responses: { "200": { description: "List of { schedule_id, schedule_name, subject, name, version, bytes, written_by, run_id, updated_at }" } }
+    put:
+      tags: [Crew state]
+      summary: Save a new version by hand (state.manage)
+      requestBody: { content: { application/json: { schema: { type: object, properties: { schedule_id: { type: [string, "null"] }, subject: { type: string }, name: { type: string }, content: { type: string }, expected_version: { type: integer } } } } } }
+      responses: { "200": { description: The NoteVersion }, "409": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Crew state]
+      summary: Delete a note and all its versions (state.manage)
+      parameters:
+        - { name: schedule_id, in: query, schema: { type: string }, description: "A schedule's id, or none (or empty) for crew-wide" }
+        - { name: subject, in: query, schema: { type: string } }
+        - { name: name, in: query, required: true, schema: { type: string } }
+      responses: { "204": { description: Deleted }, "404": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/state/notes/versions:
+    get:
+      tags: [Crew state]
+      summary: A note's versions, newest first (at most 100)
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: schedule_id, in: query, schema: { type: string }, description: "A schedule's id, or none (or empty) for crew-wide" }
+        - { name: subject, in: query, schema: { type: string } }
+        - { name: name, in: query, required: true, schema: { type: string } }
+      responses: { "200": { description: List of NoteVersion } }
+  /crews/{id}/state/notes/rollback:
+    post:
+      tags: [Crew state]
+      summary: Save an earlier version's content as the newest version (state.manage)
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { content: { application/json: { schema: { type: object, properties: { schedule_id: { type: [string, "null"] }, subject: { type: string }, name: { type: string }, version: { type: integer }, expected_version: { type: integer } } } } } }
+      responses: { "200": { description: The new NoteVersion }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/state/log:
+    get:
+      tags: [Crew state]
+      summary: The action log, newest first (state.view); subject and action match anywhere, ignoring case
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: schedule_id, in: query, schema: { type: string } }
+        - { name: subject, in: query, schema: { type: string } }
+        - { name: action, in: query, schema: { type: string } }
+        - { $ref: "#/components/parameters/limit" }
+        - { $ref: "#/components/parameters/offset" }
+      responses: { "200": { description: Page of ActionEntry } }
+  /crews/{id}/state/log/{entryId}:
+    delete:
+      tags: [Crew state]
+      summary: Delete one entry (state.manage)
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: entryId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses: { "204": { description: Deleted } }
+  /crews/{id}/state/watches:
+    get:
+      tags: [Crew state]
+      summary: Watches on the crew's schedules, with their status and 30-day savings (state.view)
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "List of Watch, each with stats" } }
+  /crews/{id}/state/tracking:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Crew state]
+      summary: The crew's tracking list (state.view), and the Jira and Linear connections it may use for new items
+      parameters: [{ name: include_removed, in: query, schema: { type: boolean } }]
+      responses:
+        "200":
+          description: "{ items: [TrackingItem], connections: [{ id, name, kind }] }"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/TrackingItem" } }
+                  connections: { type: array, items: { type: object, properties: { id: { type: string }, name: { type: string }, kind: { type: string } } } }
+    post:
+      tags: [Crew state]
+      summary: Add an item (state.manage). The connection must be one the crew may use and the item must exist in the tracker; an empty project becomes the item's project key.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/TrackingItemInput" } } } }
+      responses: { "201": { description: The TrackingItem }, "409": { description: already_tracked, content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }, "422": { $ref: "#/components/responses/Error" }, "502": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/state/tracking/check:
+    post:
+      tags: [Crew state]
+      summary: Look an item up in the tracker before adding it, to confirm it (state.manage); saves nothing
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/TrackingItemInput" } } } }
+      responses: { "200": { description: "{ connection, issue, direct_children, children_capped, already_tracked }" }, "422": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/state/tracking/{itemId}:
+    delete:
+      tags: [Crew state]
+      summary: Stop tracking an item (state.manage); it stays in the history
+      parameters:
+        - { $ref: "#/components/parameters/id" }
+        - { name: itemId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses: { "200": { description: The removed TrackingItem }, "404": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/memory/settings:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Memory]
+      summary: The crew's memory settings, whether the server can embed, and the model used when llm_id is null (state.view)
+      responses: { "200": { description: MemorySettingsView, content: { application/json: { schema: { $ref: "#/components/schemas/MemorySettingsView" } } } } }
+    put:
+      tags: [Memory]
+      summary: "Change them (crews.edit and state.manage, since they drive spend). Off always works; other modes answer 409 memory_unavailable without an embedder; 422 for a missing or unpriced model or bad weights."
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/MemorySettings" } } } }
+      responses: { "200": { description: MemorySettingsView }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/memory:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Memory]
+      summary: "A page of the crew's memories, newest first (state.view). With q, best matches by meaning first (memories whose text contains q are kept); without an embedder, a text match."
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: scope, in: query, schema: { type: string }, description: This scope and everything below it (whole parts) }
+        - { name: status, in: query, schema: { type: string, enum: [active, pending] } }
+        - { name: pinned, in: query, schema: { type: boolean } }
+        - { name: run_id, in: query, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/limit" }
+        - { $ref: "#/components/parameters/offset" }
+      responses: { "200": { description: Page of MemoryRecord }, "422": { $ref: "#/components/responses/Error" } }
+    post:
+      tags: [Memory]
+      summary: "Add a memory by hand (state.manage); it is active at once, with source user:<name>. 409 memory_exists when the scope already holds the same text; 409 memory_unavailable without an embedder."
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [content], properties: { content: { type: string, maxLength: 2000 }, scope: { type: string }, categories: { type: array, maxItems: 10, items: { type: string } }, importance: { type: number }, pinned: { type: boolean }, metadata: { type: object } } } } } }
+      responses: { "201": { description: The MemoryRecord }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/memory/scopes:
+    get:
+      tags: [Memory]
+      summary: "Every scope holding memories, with how many (state.view): [{ scope, count }]"
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "List of { scope, count }" } }
+  /crews/{id}/memory/delete:
+    post:
+      tags: [Memory]
+      summary: "Delete many memories, pinned ones included (state.manage): a scope and everything below it, memories whose text contains something (such as a person's name), and/or ids; the filters combine. dry_run only counts (deleted 0)."
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { scope_prefix: { type: string }, contains: { type: string }, ids: { type: array, items: { type: string, format: uuid } }, dry_run: { type: boolean } } } } } }
+      responses: { "200": { description: "{ matched, deleted }" }, "422": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/memory/promote:
+    post:
+      tags: [Memory]
+      summary: "Turn memories into one KM2 document through the crew's only KM2 connection, which must be in your areas (state.manage). Same save path as km_save_document: the connection's folders, a km2:save action log entry (no run), 200 saves per connection a day (429 km2_day_cap) and 20 promotions per person a day (429 km2_promote_cap). external_ref defaults to crew-memory-<crew>-<hash of the ids>. Pending memories are refused (422 memory_ids: approve these memories first). Field errors are keyed memory_ids, title, folder or external_ref."
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [memory_ids, title], properties: { memory_ids: { type: array, minItems: 1, maxItems: 50, items: { type: string, format: uuid } }, title: { type: string, maxLength: 255 }, folder: { type: string }, external_ref: { type: string } } } } } }
+      responses: { "200": { description: "{ outcome, document_id, external_ref, folder_id }; outcome is KM2's (created, updated, unchanged, ...) or already_saved" }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" }, "502": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/memory/promote/folders:
+    get:
+      tags: [Memory]
+      summary: "The folders of the KM2 connection promoting this crew's memories saves through, for the folder picker (state.manage; the same budget as testing a KM2 connection)"
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: "As GET /connections/{id}/km2/folders" }, "409": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/memory/{mid}:
+    parameters:
+      - { $ref: "#/components/parameters/id" }
+      - { name: mid, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [Memory]
+      summary: "Change a memory (state.manage); status active approves a pending one. A new content is embedded again."
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { content: { type: string }, scope: { type: string }, categories: { type: array, items: { type: string } }, importance: { type: number }, pinned: { type: boolean }, metadata: { type: object }, status: { type: string, enum: [active] } } } } } }
+      responses: { "200": { description: The MemoryRecord }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Memory]
+      summary: Delete a memory (state.manage)
+      responses: { "204": { description: Deleted }, "404": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/chat:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Chat]
+      summary: The crew's chat settings (crews.view); a crew nobody set up has chat off and the default budget
+      responses: { "200": { description: ChatSettings, content: { application/json: { schema: { $ref: "#/components/schemas/ChatSettings" } } } } }
+    put:
+      tags: [Chat]
+      summary: Turn chat on or off, pick the front desk agent (one of the crew's agents), the chat model and the daily budget per conversation (crews.edit)
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ChatSettings" } } } }
+      responses: { "200": { description: ChatSettings }, "422": { $ref: "#/components/responses/Error" } }
+  /agents/{id}/chat:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Chat]
+      summary: The agent's chat settings (agents.view); an agent nobody set up has chat off
+      responses: { "200": { description: AgentChatSettings, content: { application/json: { schema: { $ref: "#/components/schemas/AgentChatSettings" } } } } }
+    put:
+      tags: [Chat]
+      summary: Turn agent chat on or off, and pick the chat model, the specialists it may ask, the crews it may start and the budgets (agents.edit)
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AgentChatSettings" } } } }
+      responses: { "200": { description: AgentChatSettings }, "422": { $ref: "#/components/responses/Error" } }
+  /crews/{id}/escalation:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Human input]
+      summary: The crew's rules for asking a person (crews.view); a crew nobody set up has escalation off
+      responses: { "200": { description: EscalationSettings, content: { application/json: { schema: { $ref: "#/components/schemas/EscalationSettings" } } } } }
+    put:
+      tags: [Human input]
+      summary: Turn asking on or off, and set the rules, the wait, what happens on timeout and the questions per run (crews.edit)
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/EscalationSettings" } } } }
+      responses: { "200": { description: EscalationSettings }, "422": { $ref: "#/components/responses/Error" } }
+  /questions:
+    get:
+      tags: [Human input]
+      summary: "Open questions waiting on you, soonest deadline first (at most 100); questions from agent chat hand-offs only when signed in, not with an API key"
+      responses: { "200": { description: List of HumanQuestion, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/HumanQuestion" } } } } } }
+  /questions/stream:
+    get:
+      tags: [Human input]
+      summary: "Server-Sent Events: a questions event with your open questions on connect and whenever one is asked, answered or times out"
+      responses: { "200": { description: text/event-stream } }
+  /questions/{id}/answer:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Human input]
+      summary: "Answer a question waiting on you; the run carries on at once. A question from an agent chat's hand-off (handoff_id set) can only be answered by the conversation's owner (404 for anyone else), signed in to Crew Studio, not with an API key (403)."
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [answer], properties: { answer: { type: string, minLength: 1, maxLength: 4000 } } } } } }
+      responses:
+        "200": { description: HumanQuestion, content: { application/json: { schema: { $ref: "#/components/schemas/HumanQuestion" } } } }
+        "403": { description: "not_your_question: it waits on someone else; forbidden: a hand-off's question answered with an API key", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "409": { description: "question_answered, question_timed_out or question_closed", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "422": { $ref: "#/components/responses/Error" }
+  /work-orders/{id}/conversation:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Work orders]
+      summary: Your conversation with the crew about the work order, or null before you start one (work_orders.view, crews.chat)
+      responses: { "200": { description: "ConversationView or null", content: { application/json: { schema: { oneOf: [{ $ref: "#/components/schemas/ConversationView" }, { type: "null" }] } } } } }
+  /work-orders/{id}/conversation/messages:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Work orders]
+      summary: Ask the crew about the work order; starts your conversation if need be. Works whether or not the crew has chat on
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [content], properties: { content: { type: string, maxLength: 4000 } } } }, multipart/form-data: { schema: { type: object, properties: { content: { type: string, maxLength: 4000 }, file: { type: array, maxItems: 4, items: { type: string, format: binary }, description: "PNG, JPEG, GIF, WebP or PDF; at most 10 MB each, 20 MB together" } } } } } }
+      responses:
+        "201": { description: ConversationView, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationView" } } } }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { description: "chat_turn_active, chat_budget_used or chat_person_budget_used", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "422": { $ref: "#/components/responses/Error" }
+  /work-orders/{id}/conversation/compact:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Work orders]
+      summary: Compact your conversation about the work order into a summary that later turns are given instead of the messages before it
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        "201": { description: ConversationView with the summary message, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationView" } } } }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: "nothing_to_compact, conversation_changed, chat_turn_active, chat_budget_used or chat_person_budget_used", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /work-orders/{id}/feedback:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Work orders]
+      summary: Feedback given on the work order's attempts, oldest first
+      responses: { "200": { description: "List of { id, work_order_id, run_id, revision_run_id, feedback, with_conversation, created_by_name, created_at }" } }
+  /work-orders/{id}/revise:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [Work orders]
+      summary: Start a new attempt that revises the latest one with your feedback (work_orders.create)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [feedback], properties: { feedback: { type: string, minLength: 1, maxLength: 8000 }, include_conversation: { type: boolean, description: Also give the attempt your conversation with the crew about the work order } } } } } }
+      responses:
+        "201": { description: "{ run, feedback }" }
+        "409": { description: "not_submitted, or an attempt is queued or running", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "422": { $ref: "#/components/responses/Error" }
+  /work-orders/{id}/questions:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Human input]
+      summary: Every question the work order's attempts asked, newest first (work_orders.view)
+      responses: { "200": { description: List of HumanQuestion, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/HumanQuestion" } } } } } }
+  /chat/crews:
+    get:
+      tags: [Chat]
+      summary: Crews in your areas you can chat with (chat on, front desk still in the crew)
+      responses: { "200": { description: "List of { id, name, description, front_desk_name, front_desk_role }" } }
+  /chat/agents:
+    get:
+      tags: [Chat]
+      summary: Agents in your areas you can chat with directly, with the specialists and crews they may use that you can see
+      responses: { "200": { description: "List of { id, name, role, goal, specialists: [{ id, name, role }], crews: [{ id, name }] }" } }
+  /chat/conversations:
+    get:
+      tags: [Chat]
+      summary: Your own conversations with crews and agents, most recently used first (at most 100)
+      parameters: [{ name: crew_id, in: query, schema: { type: string, format: uuid } }, { name: agent_id, in: query, schema: { type: string, format: uuid } }]
+      responses: { "200": { description: List of Conversation } }
+    post:
+      tags: [Chat]
+      summary: Start a conversation with a crew (crew_id) or an agent (agent_id) with its first message; the reply is written by a chat run (poll the conversation)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [content], properties: { crew_id: { type: string, format: uuid }, agent_id: { type: string, format: uuid, description: Agent chat; send it instead of crew_id }, content: { type: string, maxLength: 4000 } } } } } }
+      responses:
+        "201": { description: ConversationView, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationView" } } } }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: "chat_budget_used: the daily budget is spent", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "422": { description: Invalid message, or chat is off for the crew, content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "429": { $ref: "#/components/responses/Error" }
+  /chat/conversations/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [Chat]
+      summary: One of your conversations with its latest 200 messages and budget
+      responses: { "200": { description: ConversationView, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationView" } } } }, "404": { $ref: "#/components/responses/Error" } }
+    delete:
+      tags: [Chat]
+      summary: Delete one of your conversations (its chat and hand-off runs are kept); 409 chat_turn_active while a reply is being written, handoff_active while a hand-off runs
+      responses: { "204": { description: Deleted }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" } }
+  /chat/conversations/{id}/messages:
+    post:
+      tags: [Chat]
+      summary: Send the next message; one turn at a time per conversation
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [content], properties: { content: { type: string, maxLength: 4000 } } } }, multipart/form-data: { schema: { type: object, properties: { content: { type: string, maxLength: 4000 }, file: { type: array, maxItems: 4, items: { type: string, format: binary }, description: "PNG, JPEG, GIF, WebP or PDF; at most 10 MB each, 20 MB together" } } } } } }
+      responses:
+        "201": { description: ConversationView, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationView" } } } }
+        "409": { description: "chat_turn_active (wait for the reply), chat_budget_used or chat_person_budget_used", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "422": { $ref: "#/components/responses/Error" }
+  /chat/conversations/{id}/compact:
+    post:
+      tags: [Chat]
+      summary: "Compact the conversation: a short turn summarises it, and later turns are given the summary and the messages after it instead of the earlier ones"
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        "201": { description: ConversationView with the summary message, content: { application/json: { schema: { $ref: "#/components/schemas/ConversationView" } } } }
+        "409": { description: "nothing_to_compact (fewer than two messages since the last summary), conversation_changed, chat_turn_active, handoff_active (a hand-off is running), chat_budget_used or chat_person_budget_used", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /chat/messages/{id}/confirm:
+    post:
+      tags: [Chat]
+      summary: "Apply the reply's pending proposal. Only the conversation's owner, signed in to Crew Studio (not with an API key). start_work_order also needs work_orders.create. Agent chat's tracker and KM2 cards need crews.run and post or save through the connection as you: a tracker comment ends with who confirmed it and which agent drafted it, a KM2 document carries them in its metadata."
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses:
+        "200": { description: The ChatMessage, with proposal_result }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { description: "proposal_decided, proposal_expired (after 24 hours), version_conflict (the note changed), crew_not_offered (agent chat: the agent may no longer start the crew), no_proposal; for start_handoff also chat_turn_active (the reply is still being written), chat_off, handoffs_off, worker_not_offered, handoffs_busy, chat_budget_used or chat_person_budget_used; for tracker_comment, tracker_suggestion, tracker_issue and km2_save (which also need crews.run, 403) chat_off, proposals_off (a specialist's card after the agent's specialists may no longer propose), proposer_not_offered (the proposing agent is no longer the lead or one of its specialists you can see, or lost the tool), connection_not_offered (off the agent's list, or outside your or the agent's areas), connection_off, create_off, tracker_busy or km2_busy (the card stays pending). A tracker or KM2 refusal answers 422 or 502 with its reason (on Linear, 422 for a text with a profile link); any write failure other than a clear refusal (4xx, rate limit) confirms the card with proposal_result { outcome: unknown, message } so it cannot post twice", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "422": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /chat/messages/{id}/decline:
+    post:
+      tags: [Chat]
+      summary: Decline the reply's pending proposal (owner, signed in)
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: The ChatMessage }, "409": { $ref: "#/components/responses/Error" } }
+  /chat/messages/{id}/undo:
+    post:
+      tags: [Chat]
+      summary: Undo a confirmed change that can be undone (notes_put; owner, signed in). Refused when the note changed since.
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: The ChatMessage, with undone_at }, "409": { $ref: "#/components/responses/Error" } }
+  /chat/conversations/{id}/questions:
+    get:
+      tags: [Chat]
+      summary: "The questions your conversation's hand-offs asked you, open ones first (soonest due first), then the others newest first; at most 200. Answer with POST /questions/{id}/answer, signed in."
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: List of HumanQuestion, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/HumanQuestion" } } } } }, "404": { $ref: "#/components/responses/Error" } }
+  /chat/handoffs/{id}:
+    get:
+      tags: [Chat]
+      summary: One hand-off of your own conversation
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      responses: { "200": { description: Handoff, content: { application/json: { schema: { $ref: "#/components/schemas/Handoff" } } } }, "404": { $ref: "#/components/responses/Error" } }
+  /chat/handoffs/{id}/cancel:
+    post:
+      tags: [Chat]
+      summary: "Cancel a hand-off's run (the conversation's owner, signed in to Crew Studio, not with an API key); its result message then says it was cancelled"
+      parameters: [{ $ref: "#/components/parameters/id" }]
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses:
+        "200": { description: The Handoff, content: { application/json: { schema: { $ref: "#/components/schemas/Handoff" } } } }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: "handoff_finished: it has already finished", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /run-state/scope:
+    get:
+      tags: [Run state]
+      summary: The run's crew, schedule, areas and the connections it may use
+      security: [{ runToken: [] }]
+      responses: { "200": { description: "{ run_id, crew_id, crew_name, schedule_id, schedule_name, area_ids, connections, expires_at, dry_run }" }, "401": { $ref: "#/components/responses/Error" } }
+  /run-state/control:
+    get:
+      tags: [Run state]
+      summary: "What people asked of the running crew: { compact_requests }, how many times they asked to compact its agents' context"
+      security: [{ runToken: [] }]
+      responses: { "200": { description: "{ compact_requests }" }, "401": { $ref: "#/components/responses/Error" } }
+  /run-state/notes:
+    get:
+      tags: [Run state]
+      summary: The run's notes (latest versions, without content)
+      security: [{ runToken: [] }]
+      parameters: [{ name: subject, in: query, schema: { type: string } }]
+      responses: { "200": { description: List } }
+  /run-state/notes/{name}:
+    parameters:
+      - { name: name, in: path, required: true, schema: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$" } }
+    get:
+      tags: [Run state]
+      summary: Latest version of a note (404 when there is none yet)
+      security: [{ runToken: [] }]
+      parameters: [{ name: subject, in: query, schema: { type: string } }]
+      responses: { "200": { description: The NoteVersion }, "404": { $ref: "#/components/responses/Error" } }
+    put:
+      tags: [Run state]
+      summary: Save the next version
+      security: [{ runToken: [] }]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/NotePut" } } } }
+      responses: { "200": { description: The NoteVersion }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" } }
+  /run-state/log/check:
+    get:
+      tags: [Run state]
+      summary: The latest matching action log entry, or null
+      security: [{ runToken: [] }]
+      parameters:
+        - { name: subject, in: query, required: true, schema: { type: string } }
+        - { name: action, in: query, required: true, schema: { type: string } }
+        - { name: within, in: query, schema: { type: string, examples: [24h, 7d, 2w] } }
+      responses: { "200": { description: "{ entry }" } }
+  /run-state/log:
+    post:
+      tags: [Run state]
+      summary: Record an action (201), or return the earlier entry for a repeated idempotency key (200, duplicate true). A dry-run run's entries are dry-run entries.
+      security: [{ runToken: [] }]
+      requestBody: { content: { application/json: { schema: { $ref: "#/components/schemas/LogRecord" } } } }
+      responses: { "201": { description: "{ entry, duplicate }" }, "200": { description: "{ entry, duplicate: true }" } }
+  /run-state/tracking:
+    get:
+      tags: [Run state]
+      summary: The crew's tracking list (crew-wide items and the run's schedule's); runs can only read it
+      security: [{ runToken: [] }]
+      responses: { "200": { description: List of TrackingItem, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/TrackingItem" } } } } } }
+  /run-state/trackers:
+    get:
+      tags: [Run state]
+      summary: The Jira and Linear connections the run may use
+      security: [{ runToken: [] }]
+      responses: { "200": { description: "List of { id, name, kind }" } }
+  /run-state/trackers/projects:
+    get:
+      tags: [Run state]
+      summary: Jira projects or Linear teams of a connection (?connection= id or name; optional when the run has one tracker)
+      security: [{ runToken: [] }]
+      parameters: [{ name: connection, in: query, schema: { type: string } }]
+      responses: { "200": { description: "List of { key, name, lead }" } }
+  /run-state/trackers/issues:
+    get:
+      tags: [Run state]
+      summary: Find issues in a project, filtered by code (the first 50 of up to 1,000 open issues)
+      security: [{ runToken: [] }]
+      parameters:
+        - { name: connection, in: query, schema: { type: string } }
+        - { name: project, in: query, required: true, schema: { type: string } }
+        - { name: overdue, in: query, schema: { type: boolean } }
+        - { name: due_within_days, in: query, schema: { type: integer } }
+        - { name: not_updated_days, in: query, schema: { type: integer } }
+        - { name: unassigned, in: query, schema: { type: boolean } }
+        - { name: blocked, in: query, schema: { type: boolean } }
+        - { name: owner, in: query, schema: { type: string } }
+        - { name: include_done, in: query, schema: { type: boolean } }
+      responses: { "200": { description: "{ issues, total }" } }
+    post:
+      tags: [Run state]
+      summary: "Create an issue: only where an administrator turned on allow_create for the connection (403 create_off otherwise). A dry run creates nothing and answers would_post."
+      security: [{ runToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [project, title], properties: { connection: { type: string }, project: { type: string }, title: { type: string, maxLength: 255 }, description: { type: string }, parent: { type: string } } } } } }
+      responses: { "201": { description: TrackerPostResult }, "200": { description: "TrackerPostResult (dry run)" }, "403": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" } }
+  /run-state/trackers/issues/{ref}:
+    get:
+      tags: [Run state]
+      summary: One issue with its 10 newest comments. Tracker text is untrusted data.
+      security: [{ runToken: [] }]
+      parameters:
+        - { name: ref, in: path, required: true, schema: { type: string, examples: [PRJ-15, "jira:PRJ-15"] } }
+        - { name: connection, in: query, schema: { type: string } }
+      responses: { "200": { description: "Issue with connection and comments" }, "422": { $ref: "#/components/responses/Error" } }
+  /run-state/trackers/issues/{ref}/children:
+    get:
+      tags: [Run state]
+      summary: An issue's children, every level (depth=0, the default) or the first depth levels (at most 200)
+      security: [{ runToken: [] }]
+      parameters:
+        - { name: ref, in: path, required: true, schema: { type: string } }
+        - { name: connection, in: query, schema: { type: string } }
+        - { name: depth, in: query, schema: { type: integer, minimum: 0, maximum: 5 } }
+      responses: { "200": { description: "{ parent, depth, children }" } }
+  /run-state/trackers/issues/{ref}/comments:
+    post:
+      tags: [Run state]
+      summary: "Comment, mentioning people by account id. Logged in the action log (followup:<step> with followup_step, else tracker:comment). Dry run: nothing is posted (200, would_post, dry-run entry). Caps: comment_cap_per_run and mention_cap_per_day (429). Chat turns get 403."
+      security: [{ runToken: [] }]
+      parameters: [{ name: ref, in: path, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [text], properties: { connection: { type: string }, text: { type: string, maxLength: 10000 }, mentions: { type: array, maxItems: 10, items: { type: string } }, followup_step: { type: string } } } } } }
+      responses: { "201": { description: TrackerPostResult }, "200": { description: "TrackerPostResult (dry run, or a follow-up already posted in this run)" }, "422": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" } }
+  /run-state/trackers/issues/{ref}/suggestions:
+    post:
+      tags: [Run state]
+      summary: Suggest a field change as a comment; the field itself is never changed. Same logging, dry run and caps as comments.
+      security: [{ runToken: [] }]
+      parameters: [{ name: ref, in: path, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [field, value, reason], properties: { connection: { type: string }, field: { type: string, enum: [due_date, assignee, status, priority, title, labels, parent] }, value: { type: string }, reason: { type: string }, mentions: { type: array, items: { type: string } } } } } } }
+      responses: { "201": { description: TrackerPostResult }, "200": { description: "TrackerPostResult (dry run)" }, "422": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" } }
+  /run-state/km2/search:
+    post:
+      tags: [Run state]
+      summary: "km_search: semantic search in KM2 through the run's one KM2 connection (Studio picks it; 409 no_km2 or km2_ambiguous otherwise). Studio calls KM2's POST /api/v1/search with the connection's key, which never reaches the run. Chat turns need km_search in their tools."
+      security: [{ runToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [query], properties: { query: { type: string, maxLength: 5000 }, top_k: { type: integer, minimum: 1, maximum: 20, default: 5 } } } } } }
+      responses: { "200": { description: "{ connection, query, hits: [{ document_id, document_title, text, score, chunk_order }], total }" }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" }, "502": { $ref: "#/components/responses/Error" } }
+  /run-state/km2/ask:
+    post:
+      tags: [Run state]
+      summary: "km_ask: a KM2 answer with its sources (KM2's POST /api/v1/search/chat), as the run's KM2 connection. Per run: 6 a minute and 2 open at once (429). Chat turns need km_ask in their tools."
+      security: [{ runToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [question], properties: { question: { type: string, maxLength: 5000 } } } } } }
+      responses: { "200": { description: "{ connection, question, answer, sources: [object] }" }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" }, "502": { $ref: "#/components/responses/Error" } }
+  /run-state/mcp/{connection_id}/tools/{name}:
+    post:
+      tags: [Run state]
+      summary: "An MCP read tool in agent chat (slice 3e): only a crew-less agent-chat turn or hand-off, only a tool frozen into its spec's chat.mcp_tools, on a connection still enabled, visible to the person and shared with the agent (409 no_mcp), and only while the tool is still enabled and marked reads (403 mcp_tool_off). Studio calls the MCP server with the connection's secret, which never reaches the run; the result's text is cut to 64 KB and the call journalled (argument names and size, not values). Per run 30 calls a minute, per connection 120 a minute and 4 at once (429)."
+      security: [{ runToken: [] }]
+      parameters: [{ name: connection_id, in: path, required: true, schema: { type: string, format: uuid } }, { name: name, in: path, required: true, schema: { type: string, pattern: "^[A-Za-z0-9_.-]{1,128}$" } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { arguments: { type: object, description: "The tool's arguments, at most 32 KB" } } } } } }
+      responses: { "200": { description: "{ connection, tool, content, is_error, truncated }: content is the MCP server's words (untrusted)" }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" }, "502": { $ref: "#/components/responses/Error" } }
+  /run-state/km2/documents:
+    post:
+      tags: [Run state]
+      summary: "km_save_document: save text to KM2 (POST /api/v1/knowledge/documents) under external_ref; the same ref in the same folder is a new version. folder is empty (the connection's default folder), a folder id, or a folder name or path among the connection's save folders (403 km2_folder_not_allowed otherwise). Studio adds metadata source, crew, run_id and schedule. Reserved in the action log as km2:save before sending and finished with KM2's outcome (refused saves are removed; unanswered ones are kept as unknown). Dry run: nothing is saved (200, would_save, dry-run entry). At most 10 saves per run (429 km2_save_cap) and 200 per connection a day (429 km2_day_cap); the same document twice in a run is sent once (200, repeated: true; 409 km2_in_flight while sending). Chat turns get 403."
+      security: [{ runToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [title, content, external_ref], properties: { title: { type: string, maxLength: 255 }, content: { type: string, description: "Up to 1 MB of text" }, external_ref: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,189}$" }, folder: { type: string }, metadata: { type: object, description: "Flat: strings, numbers, booleans, null or lists of those; at most 50 keys and 8 KiB; KM2's reserved keys are refused" }, source_file: { type: string } } } } } }
+      responses: { "201": { description: "{ saved: true, outcome: created, document_id, processing_status, external_ref, folder_id, logged, message }" }, "200": { description: "The same with outcome updated, unchanged, metadata_updated or reprocessed; or a dry run ({ dry_run: true, would_save, logged }); or a repeat in this run" }, "403": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" }, "502": { $ref: "#/components/responses/Error" } }
+  /run-state/reports:
+    post:
+      tags: [Run state]
+      summary: "deliver_report: one project's report (Markdown, at most 64 KB) with an optional cadence, weekly (the default) or daily (anything else is 400 bad_cadence). Studio keeps it as the project's weekly-report note, or a daily report as its daily-report note (subject project:<slug>), and sends it to the work order output and every destination of the run's schedule, logging each delivery as report:<kind> (subject project:<slug>) under an idempotency key. KM2 gets a document with external_ref <slug>-weekly-<ISO week> or <slug>-daily-<local date>. The answer has cadence and period (the ISO week, or the daily report's date in the schedule's time zone). Dry run: nothing is sent (statuses would_send, dry-run entries). The same report again in the run answers 200 and sends nothing; different text for the same project and cadence is 409 report_exists. Caps: 20 reports and 60 sends per run (429 report_cap). Chat turns get 403. The markdown is the narrative: Studio reads the project's tracked items itself (20 seconds at most), stores them with the report as its snapshot and builds the deliveries from them (email gets a designed HTML part, Slack and Teams a summary, KM2 the data as Markdown with the narrative); when the tracker cannot be read the report goes as written, and the action log's details.snapshot says why."
+      security: [{ runToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [project, markdown], properties: { project: { type: string, maxLength: 100 }, markdown: { type: string, maxLength: 65536 }, cadence: { type: string, enum: [weekly, daily], default: weekly } } } } } }
+      responses: { "201": { description: "{ report_id, project, week, dry_run, deliveries: [{ destination, target, status, message }], message }" }, "200": { description: The same report, already delivered in this run }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" } }
+  /run-state/proposals:
+    post:
+      tags: [Run state]
+      summary: "Chat turns only: attach a proposal (start_work_order or notes_put) to the reply the run is writing; at most one per reply. Other runs get 403. Chat turns get 403 from PUT /run-state/notes/{name} and POST /run-state/log. An agent chat turn (no crew) may call only this, GET /run-state/control, and the tracker and KM2 reads (GET /run-state/trackers, /trackers/projects, /trackers/issues, /trackers/issues/{ref}, /trackers/issues/{ref}/children; POST /run-state/km2/search, /km2/ask) when one of its agents has the tool, through the agent's listed connections that are still enabled, that the person can still see and that still share an area with the agent; a path with encoded characters, and everything else, is 403. A start_work_order whose inputs (by key) leave out a required input without a default, or name a key the crew does not have, is 422 with details naming the keys. start_handoff ({ worker, title, brief }; the worker by role, name or id: the agent or one of the turn's specialists) comes only from an agent chat turn whose lead was given Hand off work. A hand-off run (kind handoff) has the same allowlist as an agent chat turn; each of its proposals is a message of its own (handoff set, no run), at most 5 per hand-off (409 too_many_proposals), and start_handoff from it is 403 no_chains. In agent chat, tracker_comment ({ connection, issue, text }), tracker_suggestion ({ connection, issue, field, value, reason }), tracker_issue ({ connection, project, title, description, parent }; 409 create_off unless the connection lets crews create issues) and km2_save ({ connection, title, external_ref, content, folder }; the external_ref is kept under agent-chat-<12 hex characters of the conversation id>-) come from the counterparts of an agent's changing tools: connection is a name or id of the turn's connections of that kind (empty: the only one). Studio records the connection and which agent proposed it (from the X-Crew-Agent role, which must be an agent of the turn given that counterpart; 403 otherwise). Hidden characters are dropped from the text; on Linear a text with a profile link is 422."
+      security: [{ runToken: [] }]
+      requestBody: { content: { application/json: { schema: { type: object, required: [type, payload], properties: { type: { type: string, enum: [start_work_order, notes_put, tracking_add, tracking_remove, start_handoff, tracker_comment, tracker_suggestion, tracker_issue, km2_save] }, payload: { type: object } } } } } }
+      responses: { "201": { description: "{ message_id, proposal, state: pending }" }, "403": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" } }
+  /run-state/memory/embed:
+    post:
+      tags: [Run state]
+      summary: "Embed 1 to 32 texts with the server's embedder (kind query while recalling, otherwise document). At most 300 texts per run are sent to the provider (429 memory_embed_cap); repeats come from a per-run cache. Not journalled. Every memory call answers 403 memory_off when memory is off for the run, and 503 memory_unavailable without an embedder."
+      security: [{ runToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [texts], properties: { texts: { type: array, minItems: 1, maxItems: 32, items: { type: string } }, kind: { type: string, enum: [query, document] } } } } } }
+      responses: { "200": { description: "{ model, dimensions, vectors }" }, "403": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /run-state/memory/search:
+    post:
+      tags: [Run state]
+      summary: "Rank the crew's memories by cosine similarity (0..1): active ones and those this run saved, embedded with the current model, scoring at least the larger of min_score and the embedder's relevance floor. Journal: Memory: recalled n of m."
+      security: [{ runToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [embedding], properties: { embedding: { type: array, items: { type: number } }, scope_prefix: { type: string }, categories: { type: array, items: { type: string } }, metadata_filter: { type: object }, limit: { type: integer, minimum: 1, maximum: 50, default: 10 }, min_score: { type: number, minimum: 0, maximum: 1 } } } } } }
+      responses: { "200": { description: "{ matches: [{ record: MemoryRecord, score }] }" }, "422": { $ref: "#/components/responses/Error" } }
+  /run-state/memory/records:
+    get:
+      tags: [Run state]
+      summary: The memories this run may see, newest first
+      security: [{ runToken: [] }]
+      parameters:
+        - { name: scope_prefix, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0 } }
+      responses: { "200": { description: "{ records }" } }
+    post:
+      tags: [Run state]
+      summary: "Save 1 to 20 memories (not in recall-only mode: 403 memory_read_only). The server embeds them; among the memories this run may see, the same text in the same scope, or a near-duplicate in the same scope (the embedder's threshold), is touched instead (duplicate true). While review_run_saves is on they are saved pending. One saved entry per record; a skipped one has empty id and status and skipped save_cap, crew_full (5,000 memories), pending_full (500 waiting for review) or not_saved (no detail). When none could be saved for a cap, 429 memory_save_cap, memory_crew_full or memory_pending_full. Content and metadata strings with control, separator or format characters answer 422."
+      security: [{ runToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [records], properties: { records: { type: array, minItems: 1, maxItems: 20, items: { type: object, required: [content], properties: { id: { type: string, format: uuid }, content: { type: string, maxLength: 2000 }, scope: { type: string }, categories: { type: array, maxItems: 10, items: { type: string } }, metadata: { type: object, description: "Flat, at most 20 keys and 4 KB" }, importance: { type: number, minimum: 0, maximum: 1 } } } } } } } } }
+      responses: { "201": { description: "{ saved: [{ id, duplicate, status, skipped? }], skipped, remaining_saves }" }, "403": { $ref: "#/components/responses/Error" }, "422": { $ref: "#/components/responses/Error" }, "429": { $ref: "#/components/responses/Error" } }
+  /run-state/memory/records/{mid}:
+    parameters: [{ name: mid, in: path, required: true, schema: { type: string, format: uuid } }]
+    get:
+      tags: [Run state]
+      summary: One memory the run may see (404 otherwise)
+      security: [{ runToken: [] }]
+      responses: { "200": { description: MemoryRecord }, "404": { $ref: "#/components/responses/Error" } }
+    patch:
+      tags: [Run state]
+      summary: "Change a memory this run saved (403 memory_not_owned otherwise) that no person pinned or, while review is on, approved (403 memory_locked); a new content is embedded again"
+      security: [{ runToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { content: { type: string }, scope: { type: string }, categories: { type: array, items: { type: string } }, metadata: { type: object }, importance: { type: number } } } } } }
+      responses: { "200": { description: MemoryRecord }, "403": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" } }
+  /run-state/memory/scopes:
+    get:
+      tags: [Run state]
+      summary: "Scopes one level below parent: { scopes }"
+      security: [{ runToken: [] }]
+      parameters: [{ name: parent, in: query, schema: { type: string, default: / } }]
+      responses: { "200": { description: "{ scopes }" } }
+  /run-state/memory/scope-info:
+    get:
+      tags: [Run state]
+      summary: "{ path, record_count, categories, oldest_record, newest_record, child_scopes }"
+      security: [{ runToken: [] }]
+      parameters: [{ name: scope, in: query, schema: { type: string } }]
+      responses: { "200": { description: ScopeInfo } }
+  /run-state/memory/categories:
+    get:
+      tags: [Run state]
+      summary: "{ categories: { name: count } }"
+      security: [{ runToken: [] }]
+      parameters: [{ name: scope_prefix, in: query, schema: { type: string } }]
+      responses: { "200": { description: "{ categories }" } }
+  /run-state/memory/count:
+    get:
+      tags: [Run state]
+      summary: "{ count }"
+      security: [{ runToken: [] }]
+      parameters: [{ name: scope_prefix, in: query, schema: { type: string } }]
+      responses: { "200": { description: "{ count }" } }
+  /run-state/memory/delete:
+    post:
+      tags: [Run state]
+      summary: "Delete memories this run saved (never pinned ones, and while review is on only pending ones), by ids, scope, categories, age or metadata: { deleted }"
+      security: [{ runToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { record_ids: { type: array, items: { type: string, format: uuid } }, scope_prefix: { type: string }, categories: { type: array, items: { type: string } }, older_than: { type: string, format: date-time }, metadata_filter: { type: object } } } } } }
+      responses: { "200": { description: "{ deleted }" } }
+  /run-state/memory/touch:
+    post:
+      tags: [Run state]
+      summary: "Mark memories as just used: { touched }. Not journalled."
+      security: [{ runToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { record_ids: { type: array, maxItems: 200, items: { type: string, format: uuid } } } } } } }
+      responses: { "200": { description: "{ touched }" } }
