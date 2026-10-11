@@ -2,7 +2,7 @@
   {
     "key": "google_search",
     "name": "Google Search",
-    "description": "Searches Google through Gemini's Google Search grounding and returns a summarized answer with the source URLs. Each search is priced with the search model price and the grounding rate in Settings.",
+    "description": "Searches Google through Gemini's Google Search grounding and returns a summarized answer with the source URLs. Each agent may run at most 10 searches in a run. Each search is priced with the search model price and the grounding rate in Settings.",
     "requires_env": [
       "GEMINI_API_KEY"
     ],
@@ -12,7 +12,7 @@
   {
     "key": "scrape_website",
     "name": "Scrape Website",
-    "description": "Fetches a public web page and returns its readable text. Local and private network addresses are blocked.",
+    "description": "Fetches a public web page and returns its readable text and the links on it. Local and private network addresses are blocked.",
     "requires_env": [],
     "effect": "reads",
     "needs": []

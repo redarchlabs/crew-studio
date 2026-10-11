@@ -8,9 +8,11 @@ import ipaddress
 import json
 import os
 import socket
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urldefrag, urljoin, urlparse
 
 import httpx
 from crewai.tools import BaseTool
@@ -28,11 +30,20 @@ VERTEX_API_URL = "https://aiplatform.googleapis.com/v1/publishers/google/models/
 GEMINI_API_KEY_PREFIX = "AIza"
 SEARCH_TIMEOUT_SECONDS = 60.0
 SEARCH_MAX_OUTPUT_TOKENS = 4096
+# Searches one agent may run in a run. Each result is resent on every later LLM call of the agent, so they add up
+MAX_SEARCHES_PER_AGENT = 10
+# Gemini cites its sources through these redirect links; agents need the real page URLs to cite and read them
+GROUNDING_REDIRECT_PREFIX = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/"
+SOURCE_RESOLVE_TIMEOUT_SECONDS = 5.0
+SOURCE_RESOLVE_WORKERS = 8
 
 SCRAPE_TIMEOUT_SECONDS = 20.0
 SCRAPE_MAX_BYTES = 2_000_000
 SCRAPE_MAX_CHARS = 20_000
 SCRAPE_MAX_REDIRECTS = 5
+# Links listed after a page's text, so an agent can read on without searching for URLs
+SCRAPE_MAX_LINKS = 150
+SCRAPE_MAX_LINK_TEXT = 80
 
 WORKSPACE_MAX_READ_BYTES = 200_000
 WORKSPACE_MAX_WRITE_BYTES = 1_000_000
@@ -83,7 +94,8 @@ class GoogleSearchTool(BaseTool):
     name: str = "Google Search"
     description: str = (
         "Searches Google for current information and returns a summarized "
-        "answer with the source URLs it was based on."
+        "answer with the source URLs it was based on. Searches are limited, so read "
+        "the pages you have found before searching again."
     )
     args_schema: type[BaseModel] = SearchInput
 
@@ -91,12 +103,26 @@ class GoogleSearchTool(BaseTool):
     _search_model: str = PrivateAttr(default="")
     # Callables live in a dict: stored directly as private attributes they get bound like methods
     _hooks: dict[str, Callable[..., Any]] = PrivateAttr(default_factory=dict)
+    # Searches this agent may run ("max") and has run ("run")
+    _limits: dict[str, int] = PrivateAttr(default_factory=lambda: {"max": MAX_SEARCHES_PER_AGENT, "run": 0})
+    # An agent can run several searches at once
+    _lock: Any = PrivateAttr(default_factory=threading.Lock)
 
-    def configure(self, agent_role: str, search_model: str, allowed: Callable[[], bool], record: SearchRecorder) -> "GoogleSearchTool":
+    def configure(self, agent_role: str, search_model: str, allowed: Callable[[], bool], record: SearchRecorder,
+                  max_searches: int = MAX_SEARCHES_PER_AGENT) -> "GoogleSearchTool":
         self._agent_role = agent_role
         self._search_model = search_model
         self._hooks = {"allowed": allowed, "record": record}
+        self._limits = {"max": max_searches, "run": 0}
         return self
+
+    def _take_search(self) -> int | None:
+        """Count one search against this agent's cap. Returns the searches left after it, or None when none are left."""
+        with self._lock:
+            if self._limits["run"] >= self._limits["max"]:
+                return None
+            self._limits["run"] += 1
+            return self._limits["max"] - self._limits["run"]
 
     def _run(self, query: str) -> str:
         if not self._hooks.get("allowed", lambda: True)():
@@ -107,6 +133,12 @@ class GoogleSearchTool(BaseTool):
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             return "Google Search unavailable: GEMINI_API_KEY is not set."
+        left = self._take_search()
+        if left is None:
+            return (
+                f"You have used all {self._limits['max']} of your searches for this run. Do not search again; read "
+                "pages you already have URLs for with Scrape Website, or write your final answer from what you have found."
+            )
 
         url_template = GEMINI_API_URL if api_key.startswith(GEMINI_API_KEY_PREFIX) else VERTEX_API_URL
         payload = {
@@ -147,7 +179,8 @@ class GoogleSearchTool(BaseTool):
                 int(usage.get("candidatesTokenCount", 0)) + int(usage.get("thoughtsTokenCount", 0)),
                 billable,
             )
-        return format_search_result(data)
+        resolved = resolve_source_urls([source.get("uri", "") for source in _search_sources(data)])
+        return f"{format_search_result(data, resolved)}\n\nSearches left for you in this run: {left}."
 
 
 def _error_message(response: httpx.Response) -> str:
@@ -157,7 +190,33 @@ def _error_message(response: httpx.Response) -> str:
         return response.text[:500]
 
 
-def format_search_result(data: dict[str, Any]) -> str:
+def _search_sources(data: dict[str, Any]) -> list[dict[str, Any]]:
+    candidate = (data.get("candidates") or [{}])[0]
+    metadata = candidate.get("groundingMetadata", {})
+    return [chunk["web"] for chunk in metadata.get("groundingChunks", []) if "web" in chunk]
+
+
+def _redirect_target(uri: str) -> str | None:
+    try:
+        response = httpx.head(uri, follow_redirects=False, timeout=SOURCE_RESOLVE_TIMEOUT_SECONDS)
+    except httpx.HTTPError:
+        return None
+    location = response.headers.get("location", "")
+    return location if response.is_redirect and location.startswith(("https://", "http://")) else None
+
+
+def resolve_source_urls(uris: list[str]) -> dict[str, str]:
+    """Map Gemini's grounding redirect links to the pages they lead to. Only the redirect's Location is read; the page
+    itself is not fetched. A link that cannot be resolved is left out, so it is shown as given."""
+    redirects = list(dict.fromkeys(uri for uri in uris if uri.startswith(GROUNDING_REDIRECT_PREFIX)))
+    if not redirects:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(len(redirects), SOURCE_RESOLVE_WORKERS)) as pool:
+        targets = list(pool.map(_redirect_target, redirects))
+    return {uri: target for uri, target in zip(redirects, targets) if target}
+
+
+def format_search_result(data: dict[str, Any], resolved: dict[str, str] | None = None) -> str:
     candidate = (data.get("candidates") or [{}])[0]
     parts = candidate.get("content", {}).get("parts", [])
     answer = "".join(part.get("text", "") for part in parts).strip()
@@ -165,12 +224,13 @@ def format_search_result(data: dict[str, Any]) -> str:
         return "Google Search returned no answer for this query."
 
     metadata = candidate.get("groundingMetadata", {})
-    sources = [chunk["web"] for chunk in metadata.get("groundingChunks", []) if "web" in chunk]
+    sources = _search_sources(data)
+    resolved = resolved or {}
     lines = [answer, ""]
     if sources:
         lines.append("Sources:")
         lines.extend(
-            f"[{i}] {source.get('title', 'Untitled')} - {source.get('uri', '')}"
+            f"[{i}] {source.get('title', 'Untitled')} - {resolved.get(source.get('uri', ''), source.get('uri', ''))}"
             for i, source in enumerate(sources, start=1)
         )
     else:
@@ -224,19 +284,43 @@ def pinned_request(url: str, ip: str) -> tuple[str, dict[str, str], dict[str, st
     return parsed._replace(netloc=netloc).geturl(), {"Host": host_header}, extensions
 
 
-def html_to_text(html: str) -> str:
+def read_html(html: str, base_url: str) -> tuple[str, list[tuple[str, str]]]:
+    """A page's readable text, and its http(s) links as (link text, absolute URL) in page order without repeats.
+    Links back to the page itself are left out."""
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript", "svg", "head"]):
         tag.decompose()
+    seen = {urldefrag(base_url).url}
+    links: list[tuple[str, str]] = []
+    for anchor in soup.find_all("a", href=True):
+        url = urldefrag(urljoin(base_url, anchor["href"].strip())).url
+        if urlparse(url).scheme not in ("http", "https") or url in seen:
+            continue
+        seen.add(url)
+        links.append((" ".join(anchor.get_text(" ").split())[:SCRAPE_MAX_LINK_TEXT], url))
     lines = (line.strip() for line in soup.get_text("\n").splitlines())
-    return "\n".join(line for line in lines if line)
+    return "\n".join(line for line in lines if line), links
+
+
+def html_to_text(html: str) -> str:
+    return read_html(html, "")[0]
+
+
+def format_links(links: list[tuple[str, str]]) -> str:
+    if not links:
+        return ""
+    shown = links[:SCRAPE_MAX_LINKS]
+    lines = ["Links on this page:", *(f"- [{text}]({url})" if text else f"- {url}" for text, url in shown)]
+    if len(links) > len(shown):
+        lines.append(f"... {len(links) - len(shown)} more links not shown")
+    return "\n".join(lines)
 
 
 class ScrapeWebsiteTool(BaseTool):
     name: str = "Scrape Website"
-    description: str = "Fetches a public web page and returns its readable text."
+    description: str = "Fetches a public web page and returns its readable text and the links on it."
     args_schema: type[BaseModel] = ScrapeInput
 
     def _run(self, url: str) -> str:
@@ -264,11 +348,14 @@ class ScrapeWebsiteTool(BaseTool):
                                 break
                         text = body[:SCRAPE_MAX_BYTES].decode(response.encoding or "utf-8", errors="replace")
                         content_type = response.headers.get("content-type", "")
+                        links: list[tuple[str, str]] = []
                         if "html" in content_type:
-                            text = html_to_text(text)
+                            text, links = read_html(text, current)
                         if len(text) > SCRAPE_MAX_CHARS:
                             text = text[:SCRAPE_MAX_CHARS] + "\n... [page truncated]"
-                        return text or "The page had no readable text."
+                        # Links follow the (possibly cut) text so a long page cannot push them out
+                        page = "\n\n".join(part for part in (text, format_links(links)) if part)
+                        return page or "The page had no readable text."
                 return f"Cannot fetch {url}: too many redirects."
         except httpx.HTTPStatusError as exc:
             return f"Fetching {current} failed: HTTP {exc.response.status_code}."

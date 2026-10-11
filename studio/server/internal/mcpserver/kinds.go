@@ -52,7 +52,9 @@ var kinds = []kind{
 		path: "/agents", model: reflect.TypeFor[model.Agent](), key: "id", writable: true, getByID: true, history: "agent",
 		summary: []string{"id", "name", "role", "llm_id", "tools", "area_ids", "updated_at"},
 		hints: map[string]string{
-			"llm_id":   `id of an LLM (list_items kind "llm")`,
+			"llm_id": `id of an LLM (list_items kind "llm"). Pick the cheapest LLM that can do the job (list_items kind ` +
+				`"pricing" has the prices). Keep the most expensive reasoning models for the hardest reasoning, and never give ` +
+				`one to an agent with google_search or scrape_website: every result is resent on each of its LLM calls`,
 			"tools":    `tool keys (list_items kind "tool")`,
 			"max_iter": "at least 1",
 			"area_ids": `functional area ids (list_items kind "area"); at least one`,

@@ -55,8 +55,8 @@ Tools let an agent do more than write text. A tool that needs a setting the serv
 
 | Tool | What it does |
 |---|---|
-| **Google Search** | Searches Google through Gemini and gives the agent a summarised answer with source links. Needs a Gemini API key on the server. Each search is costed from the search model's price and the search rate in [Settings](/help/settings). Once a run reaches its budget, further searches are refused. |
-| **Scrape Website** | Opens a public web page and gives the agent its readable text. Addresses on local or private networks are blocked. |
+| **Google Search** | Searches Google through Gemini and gives the agent a summarised answer with links to the source pages. Each agent may run at most 10 searches in a run; after that it is told to read the pages it has found or write its answer. Needs a Gemini API key on the server. Each search is costed from the search model's price and the search rate in [Settings](/help/settings). Once a run reaches its budget, further searches are refused. |
+| **Scrape Website** | Opens a public web page and gives the agent its readable text and a list of the links on it, so the agent can open the next page without searching for it. Addresses on local or private networks are blocked. |
 | **Read Workspace File** | Reads a text file from the run's workspace folder, such as one another agent wrote earlier in the run. Nothing outside that folder can be read. |
 | **Write Workspace File** | Writes a text file into the run's workspace folder, and nowhere else. |
 | **Generate Video** | Makes a 3 to 10 second video clip with sound from a description, optionally starting from an image in the workspace, and saves it there as an MP4. It uses Google's Gemini and is costed from the [Pricing](/help/pricing) table, at roughly $0.10 per second of 720p video. A clip that would not fit in what is left of the run's budget is refused. Needs a Gemini API key on the server. |

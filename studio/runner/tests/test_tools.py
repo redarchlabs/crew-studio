@@ -11,10 +11,13 @@ from studio_runner.tools import (
     WorkspaceReadTool,
     WorkspaceWriteTool,
     check_public_url,
+    format_links,
     format_search_result,
     html_to_text,
     load_catalog,
+    read_html,
     resolve_in_workspace,
+    resolve_source_urls,
 )
 
 
@@ -91,10 +94,69 @@ SEARCH_RESPONSE = {
 }
 
 
+def test_read_html_lists_links_once_as_absolute_urls():
+    html = (
+        '<body><p>Contents</p><a href="/study/01-fast-sunday?lang=eng"> Fast\n Sunday </a>'
+        '<a href="https://other.org/talk#part">Talk</a><a href="/study/01-fast-sunday?lang=eng#top">Again</a>'
+        '<a href="#top">Top</a><a href="mailto:x@y.org">Mail</a><a href="javascript:void(0)">JS</a>'
+        '<a href="https://example.com/page">Here</a><a href="/img"></a></body>'
+    )
+    text, links = read_html(html, "https://example.com/page")
+    assert text.startswith("Contents")
+    assert links == [
+        ("Fast Sunday", "https://example.com/study/01-fast-sunday?lang=eng"),
+        ("Talk", "https://other.org/talk"),
+        ("", "https://example.com/img"),
+    ]
+
+
+def test_format_links_caps_the_list():
+    links = [(f"Page {i}", f"https://example.com/{i}") for i in range(tools.SCRAPE_MAX_LINKS + 5)]
+    text = format_links(links)
+    assert text.startswith("Links on this page:\n- [Page 0](https://example.com/0)")
+    assert f"- [Page {tools.SCRAPE_MAX_LINKS - 1}]" in text and f"- [Page {tools.SCRAPE_MAX_LINKS}]" not in text
+    assert "5 more links not shown" in text
+    assert format_links([("", "https://example.com/x")]) == "Links on this page:\n- https://example.com/x"
+    assert format_links([]) == ""
+
+
 def test_format_search_result_lists_sources():
     text = format_search_result(SEARCH_RESPONSE)
     assert "Answer." in text and "[1] Src - https://example.com" in text and "Searches run: q1" in text
     assert "no answer" in format_search_result({})
+
+
+def test_format_search_result_uses_resolved_urls():
+    text = format_search_result(SEARCH_RESPONSE, {"https://example.com": "https://example.com/real"})
+    assert "[1] Src - https://example.com/real" in text
+
+
+def test_resolve_source_urls_follows_only_grounding_redirects(monkeypatch: pytest.MonkeyPatch):
+    redirect = tools.GROUNDING_REDIRECT_PREFIX
+    targets = {f"{redirect}a": "https://site.org/a", f"{redirect}b": None}
+    seen = []
+
+    def fake_head(url, follow_redirects, timeout):
+        seen.append(url)
+        assert follow_redirects is False
+        if targets[url] is None:
+            raise httpx.ConnectTimeout("slow")
+        return httpx.Response(302, headers={"location": targets[url]}, request=httpx.Request("HEAD", url))
+
+    monkeypatch.setattr(tools.httpx, "head", fake_head)
+    resolved = resolve_source_urls([f"{redirect}a", f"{redirect}a", f"{redirect}b", "https://plain.org/x"])
+    assert resolved == {f"{redirect}a": "https://site.org/a"}
+    assert sorted(seen) == [f"{redirect}a", f"{redirect}b"]
+
+
+def test_resolve_source_urls_ignores_non_redirects(monkeypatch: pytest.MonkeyPatch):
+    url = f"{tools.GROUNDING_REDIRECT_PREFIX}c"
+    monkeypatch.setattr(tools.httpx, "head", lambda url, follow_redirects, timeout: httpx.Response(
+        200, request=httpx.Request("HEAD", url)))
+    assert resolve_source_urls([url]) == {}
+    monkeypatch.setattr(tools.httpx, "head", lambda url, follow_redirects, timeout: httpx.Response(
+        302, headers={"location": "ftp://x"}, request=httpx.Request("HEAD", url)))
+    assert resolve_source_urls([url]) == {}
 
 
 def test_search_refuses_when_budget_used():
@@ -114,6 +176,29 @@ def test_search_records_usage(monkeypatch: pytest.MonkeyPatch):
     tool = GoogleSearchTool().configure("Analyst", "gemini-2.5-flash", lambda: True, lambda *a: calls.append(a))
     assert "Answer." in tool._run("query")
     assert calls == [("Analyst", "query", "gemini-2.5-flash", 10, 25, 1)]
+
+
+def test_search_stops_at_the_agent_cap(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-test")
+    posts = []
+
+    def fake_post(url, headers, json, timeout):
+        posts.append(json)
+        return httpx.Response(200, json=SEARCH_RESPONSE, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(tools.httpx, "post", fake_post)
+    tool = GoogleSearchTool().configure("A", "m", lambda: True, lambda *a: None, max_searches=2)
+    assert "Searches left for you in this run: 1." in tool._run("one")
+    assert "Searches left for you in this run: 0." in tool._run("two")
+    refused = tool._run("three")
+    assert "all 2 of your searches" in refused and "Scrape Website" in refused
+    assert len(posts) == 2
+
+
+def test_tool_factory_gives_each_search_tool_the_agent_cap(tmp_path: Path):
+    factory = ToolFactory("m", lambda: True, lambda *a: None, tmp_path)
+    tool = factory.build("google_search", "A")
+    assert tool._limits["max"] == tools.MAX_SEARCHES_PER_AGENT
 
 
 def test_search_reports_http_errors(monkeypatch: pytest.MonkeyPatch):
@@ -174,7 +259,8 @@ def test_scrape_connects_to_checked_address(monkeypatch: pytest.MonkeyPatch):
         def stream(self, method, url, headers, extensions):
             seen.update(url=url, host=headers["Host"], sni=extensions.get("sni_hostname"))
             request = httpx.Request(method, url)
-            response = httpx.Response(200, headers={"content-type": "text/html"}, content=b"<p>Hi</p>", request=request)
+            response = httpx.Response(200, headers={"content-type": "text/html"},
+                                      content=b'<p>Hi</p><a href="/next">Next</a>', request=request)
 
             class Ctx:
                 def __enter__(self_inner):
@@ -186,5 +272,11 @@ def test_scrape_connects_to_checked_address(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(tools, "resolve_public", fake_resolve)
     monkeypatch.setattr(tools.httpx, "Client", FakeClient)
-    assert tools.ScrapeWebsiteTool()._run("https://example.com/page") == "Hi"
+    assert tools.ScrapeWebsiteTool()._run("https://example.com/page") == (
+        "Hi\nNext\n\nLinks on this page:\n- [Next](https://example.com/next)")
     assert seen == {"trust_env": False, "url": "https://93.184.216.34/page", "host": "example.com", "sni": "example.com"}
+
+
+def test_catalog_states_the_search_cap():
+    entry = next(e for e in load_catalog() if e["key"] == "google_search")
+    assert f"at most {tools.MAX_SEARCHES_PER_AGENT} searches" in entry["description"]
