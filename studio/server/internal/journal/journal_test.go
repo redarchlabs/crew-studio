@@ -109,3 +109,19 @@ func TestConsultationLines(t *testing.T) {
 		}
 	}
 }
+
+func TestResumedRunEntry(t *testing.T) {
+	ev := func(p map[string]any) []model.RunEvent {
+		return []model.RunEvent{{Seq: 1, Type: "run_resumed", Payload: p}}
+	}
+	one := Build(model.Run{}, model.RunSpec{}, ev(map[string]any{"start_position": 1.0, "reused_tasks": []any{"Research"}}), nil).Entries[0]
+	if one.Kind != "run" || one.Title != "Resumed: reused task 1 from the earlier run" || one.Body != "Reused: Research" {
+		t.Errorf("entry = %+v", one)
+	}
+	two := Build(model.Run{}, model.RunSpec{}, ev(map[string]any{"start_position": 2.0, "reused_tasks": []any{"Research", "Design"},
+		"restored_files": 3.0, "error": "Some files could not be restored: a.md"}), nil).Entries[0]
+	want := "Reused: Research\nReused: Design\nRestored 3 files from the earlier run's workspace\nSome files could not be restored: a.md"
+	if two.Title != "Resumed: reused tasks 1–2 from the earlier run" || two.Body != want {
+		t.Errorf("entry = %+v", two)
+	}
+}

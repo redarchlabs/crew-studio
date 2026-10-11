@@ -51,6 +51,8 @@ type RunMeta struct {
 	IdempotencyScope string
 	IdempotencyKey   string
 	Callback         *Callback
+	// Resume links a run that resumes another and copies the outputs it reuses (see CreateRun)
+	Resume *RunResume
 }
 
 // Callback asks for a signed POST to URL when the run finishes.
@@ -116,6 +118,11 @@ func (s *Store) CreateRun(ctx context.Context, spec model.RunSpec, meta RunMeta)
 		if run, err = insertRun(ctx, tx, spec, meta, scope, key); err != nil {
 			return err
 		}
+		if meta.Resume != nil {
+			if err := linkResume(ctx, tx, &run, *meta.Resume); err != nil {
+				return err
+			}
+		}
 		if meta.WorkOrderID != "" {
 			if _, err := tx.Exec(ctx,
 				`UPDATE work_orders SET current_run_id = $2, submitted_at = COALESCE(submitted_at, now()), updated_at = now()
@@ -139,6 +146,9 @@ func (s *Store) CreateRun(ctx context.Context, spec model.RunSpec, meta RunMeta)
 		if perr == nil {
 			return prior, true, nil
 		}
+	}
+	if err != nil && meta.Resume != nil && violates(err, activeResumeIndex) {
+		return run, false, ErrResumeActive
 	}
 	return run, false, err
 }
@@ -204,13 +214,14 @@ func (s *Store) GetRunDetail(ctx context.Context, id string) (model.Run, error) 
 	}
 	r.Spec = &spec
 	rows, err := s.pool.Query(ctx,
-		`SELECT position, task_name, agent_role, raw FROM run_task_outputs WHERE run_id = $1 ORDER BY position`, id)
+		`SELECT position, task_name, agent_role, raw, cost_usd, reused_from_run_id::text FROM run_task_outputs
+		 WHERE run_id = $1 ORDER BY position`, id)
 	if err != nil {
 		return r, fmt.Errorf("list task outputs: %w", err)
 	}
 	outputs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.TaskOutput, error) {
 		var o model.TaskOutput
-		err := row.Scan(&o.Position, &o.TaskName, &o.AgentRole, &o.Raw)
+		err := row.Scan(&o.Position, &o.TaskName, &o.AgentRole, &o.Raw, &o.CostUSD, &o.ReusedFromRunID)
 		return o, err
 	})
 	if err != nil {
@@ -218,7 +229,7 @@ func (s *Store) GetRunDetail(ctx context.Context, id string) (model.Run, error) 
 	}
 	outputs = orEmpty(outputs)
 	r.TaskOutputs = &outputs
-	return r, nil
+	return r, s.readResumeLinks(ctx, &r)
 }
 
 func (s *Store) GetRunSpec(ctx context.Context, id string) (model.RunSpec, error) {
@@ -267,12 +278,8 @@ func (s *Store) FinishRun(ctx context.Context, id string, res RunResult) (model.
 			return mapErr(err, "run", "")
 		}
 		for _, o := range res.TaskOutputs {
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO run_task_outputs (run_id, position, task_name, agent_role, raw) VALUES ($1, $2, $3, $4, $5)
-				 ON CONFLICT (run_id, position) DO UPDATE SET task_name = EXCLUDED.task_name,
-				 agent_role = EXCLUDED.agent_role, raw = EXCLUDED.raw`,
-				id, o.Position, o.TaskName, o.AgentRole, o.Raw); err != nil {
-				return fmt.Errorf("save task output: %w", err)
+			if err := upsertTaskOutput(ctx, tx, id, o); err != nil {
+				return err
 			}
 		}
 		return nil

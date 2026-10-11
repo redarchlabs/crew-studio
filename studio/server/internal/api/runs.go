@@ -34,6 +34,7 @@ func (s *Server) runRoutes(r chi.Router) {
 		r.Get("/{id}", s.getRun)
 		r.With(s.need(auth.RunsDelete)).Delete("/{id}", s.deleteRun)
 		r.With(s.needAny(auth.RunsCancel, auth.WorkOrdersCancel)).Post("/{id}/cancel", s.cancelRun)
+		r.With(s.needAny(auth.CrewsRun, auth.WorkOrdersCreate)).Post("/{id}/resume", s.resumeRun)
 		r.With(s.needAny(auth.RunsCancel, auth.WorkOrdersCancel)).Post("/{id}/compact", s.compactRun)
 		r.Get("/{id}/events", s.listRunEvents)
 		r.Get("/{id}/interactions", s.runInteractions)
@@ -207,6 +208,12 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	detail, err := s.store.GetRunDetail(r.Context(), run.ID)
+	if err == nil {
+		detail.Resumable, err = s.resumeHint(r.Context(), principal(r), detail)
+	}
+	if err == nil {
+		err = s.hideUnviewableResumeLinks(r.Context(), principal(r), &detail)
+	}
 	if err != nil {
 		failErr(w, r, s.log, err)
 		return

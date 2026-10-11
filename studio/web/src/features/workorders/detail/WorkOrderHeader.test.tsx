@@ -89,6 +89,25 @@ describe('actions by state', () => {
     expect(h.onEdit).toHaveBeenCalled()
   })
 
+  it('a resumable attempt offers Resume as the main action, beside Re-run', () => {
+    const onResume = vi.fn()
+    renderHeader({ resumable: { start_position: 2, task_name: 'Write', reused_tasks: 2, reused_cost_usd: 0.5 }, onResume })
+    fireEvent.click(btn('Resume from task 3'))
+    expect(onResume).toHaveBeenCalled()
+    expect(btn(/Re-run/)).toBeTruthy()
+  })
+
+  it('no Resume without work_orders.create, or while an attempt is active', () => {
+    const resumable = { start_position: 1, task_name: 'Write', reused_tasks: 1, reused_cost_usd: 0 }
+    setPermissions('work_orders.cancel')
+    const { unmount } = renderHeader({ resumable, onResume: vi.fn() })
+    expect(screen.queryByText(/Resume from/)).toBeNull()
+    unmount()
+    setPermissions('work_orders.create', 'work_orders.cancel')
+    renderHeader({ resumable, onResume: vi.fn(), status: 'running', runStatus: 'running' })
+    expect(screen.queryByText(/Resume from/)).toBeNull()
+  })
+
   it('draft: the primary action reads Submit', () => {
     renderHeader({ workOrder: makeWorkOrder({ status: 'draft' }), status: 'draft' })
     expect(btn(/Submit/)).toBeTruthy()

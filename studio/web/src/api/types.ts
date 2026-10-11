@@ -186,7 +186,30 @@ export type Usage = {
   successful_requests: number
 }
 
-export type TaskOutput = { position: number; task_name: string; agent_role: string; raw: string }
+export type TaskOutput = {
+  position: number
+  task_name: string
+  agent_role: string
+  raw: string
+  /** What the task cost when it ran; left out for older runs */
+  cost_usd?: number
+  /** Set when a resumed run copied this output from the run that produced it */
+  reused_from_run_id?: string
+  /** That run was deleted, or is not one you may open */
+  reused_from_unavailable?: boolean
+}
+
+/** Where a failed or cancelled run could be resumed: the first task that would run and what is reused */
+export type ResumeHint = {
+  start_position: number
+  task_name: string
+  reused_tasks: number
+  reused_cost_usd: number
+  /** What the run already spent on the task that runs again (older servers leave it out) */
+  spent_on_task_usd?: number
+  /** Reasons the remaining tasks are likely to fail as they were, such as a missing provider key */
+  warnings?: string[]
+}
 
 export type RunSpec = {
   crew: Crew
@@ -198,6 +221,8 @@ export type RunSpec = {
   inputs: Record<string, string>
   budget_usd: number
   work_order?: WorkOrderSpec
+  /** A resumed run: the tasks before start_position are not run; their outputs are handed on */
+  resume?: { from_run_id: string; start_position: number; outputs: TaskOutput[] }
 }
 
 export type WorkOrderSpec = {
@@ -237,6 +262,15 @@ export type Run = {
   finished_at: string | null
   task_outputs?: TaskOutput[]
   spec?: RunSpec
+  /** Run detail only: the run this one resumed, and the first task (from 0) it ran */
+  resumed_from_run_id?: string
+  resume_position?: number
+  /** Run detail only: runs that resumed this one, newest first */
+  resumed_by?: string[]
+  /** Run detail only: where you could resume this run now; left out when it cannot be resumed (or not by you) */
+  resumable?: ResumeHint
+  /** Run detail only: what the run spent on each task it worked on, by task name, finished or not */
+  task_costs?: Record<string, number>
 }
 
 export type StartRunBody = { inputs: Record<string, string>; budget_usd?: number; callback_url?: string }

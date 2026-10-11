@@ -37,10 +37,12 @@ PROVIDER_ENV_FILE_VAR = "STUDIO_PROVIDER_ENV_FILE"
 EVENT_FLUSH_TIMEOUT_SECONDS = 30.0
 
 
-def finished_task_outputs(tasks: list[Any], task_agents: dict[str, str]) -> list[dict[str, Any]]:
+def finished_task_outputs(tasks: list[Any], task_agents: dict[str, str], start: int = 0) -> list[dict[str, Any]]:
+    """The outputs of the tasks this run completed. Tasks before start were completed by the run it resumes; their
+    outputs are already stored, so they are not reported again."""
     outputs = []
     for position, task in enumerate(tasks):
-        if task.output is None:
+        if position < start or task.output is None:
             continue
         outputs.append(
             {
@@ -136,6 +138,8 @@ def run(request: dict[str, Any], spec: dict[str, Any], emitter: Emitter) -> int:
         emitter.emit("crew_failed", {"error": f"Could not build the crew: {exc}", "budget_stopped": False})
         return 2
 
+    listeners.set_task_positions(built.tasks)
+    start = getattr(built, "start", 0)
     listeners.install()
     inputs = spec.get("inputs") or {}
     try:
@@ -152,13 +156,13 @@ def run(request: dict[str, Any], spec: dict[str, Any], emitter: Emitter) -> int:
                 "usage": meter.usage(),
                 "cost_usd": round(meter.spent(), 6),
                 "spend": meter.summary(),
-                "task_outputs": finished_task_outputs(built.tasks, built.task_agents),
+                "task_outputs": finished_task_outputs(built.tasks, built.task_agents, start),
             },
         )
         return 1
 
     crewai_event_bus.flush(timeout=EVENT_FLUSH_TIMEOUT_SECONDS)
-    task_outputs = finished_task_outputs(built.tasks, built.task_agents)
+    task_outputs = finished_task_outputs(built.tasks, built.task_agents, start)
     if halt.is_set():
         # An unanswered question stopped the run (the crew's rules say fail); what the agents wrote is kept
         emitter.emit("crew_failed", {"error": halt.reason, "budget_stopped": False, "usage": meter.usage(),

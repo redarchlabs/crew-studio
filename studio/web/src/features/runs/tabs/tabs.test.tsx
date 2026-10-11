@@ -5,7 +5,7 @@ import type { Attachment, Delivery, Interactions, LlmCall } from '../../../api/t
 import { copyText, downloadText } from '../../../lib/download'
 import { initialTimeline, timelineReducer } from '../timeline/timelineReducer'
 import { LlmCallsContext, useLlmCallsResource } from '../useLlmCalls'
-import { makeEvent, makeLlmCall, makeRun, makeSpec } from '../testUtils'
+import { makeEvent, makeLlmCall, makeRun, makeSpec, renderAt } from '../testUtils'
 import { CallbacksTab } from './CallbacksTab'
 import { FilesTab } from './FilesTab'
 import { InteractionsTab } from './InteractionsTab'
@@ -135,6 +135,38 @@ describe('OutputsTab', () => {
     render(<OutputsTab run={makeRun({ status: 'running', task_outputs: [] })} timeline={timeline} />)
     expect(screen.getByText('1. T1')).toBeTruthy()
     expect(screen.getByText('2. task')).toBeTruthy()
+  })
+
+  it("shows each task's cost, and which run a reused output came from", () => {
+    const run = makeRun({ task_outputs: [
+      { position: 0, task_name: 'Research', agent_role: 'A', raw: 'one', cost_usd: 0.42, reused_from_run_id: 'run-earlier-99' },
+      { position: 1, task_name: 'Design', agent_role: 'B', raw: 'two', cost_usd: 0.1 },
+      { position: 2, task_name: 'Old', agent_role: '', raw: 'three', reused_from_run_id: 'run-older-77' },
+    ] })
+    renderAt(<OutputsTab run={run} timeline={noTimeline} />)
+    expect(screen.getByText('run-earl').closest('a')?.getAttribute('href')).toBe('/runs/run-earlier-99')
+    expect(screen.getByText(/\$0 here, \$0\.42 when it ran/)).toBeTruthy()
+    expect(screen.getByText('$0.10')).toBeTruthy()
+    expect(screen.getByText('run-olde').parentElement?.textContent).toBe('reused from run run-olde · $0 here')
+  })
+
+  it('adds tasks a resumed run finished since it loaded, by position', () => {
+    const timeline = timelineReducer(initialTimeline, { type: 'append', events: [
+      makeEvent(1, 'task_completed', { task_name: 'Compaction', output: 'summary' }),
+      makeEvent(2, 'task_completed', { task_name: 'Research', output: 'stale copy', position: 0 }),
+      makeEvent(3, 'task_completed', { task_name: 'Design', agent_role: 'B', output: 'designed', position: 1 }),
+    ] })
+    const run = makeRun({ status: 'running', task_outputs: [{ position: 0, task_name: 'Research', agent_role: 'A', raw: 'reused', reused_from_run_id: 'run-earlier-99' }] })
+    renderAt(<OutputsTab run={run} timeline={timeline} />)
+    expect(screen.getAllByText(/^\d\. /).map((e) => e.textContent)).toEqual(['1. Research', '2. Design'])
+    expect(screen.getAllByTestId('md').map((e) => e.textContent)).toEqual(['reused', 'designed'])
+  })
+
+  it('does not link to a run a reused output came from when it is unavailable', () => {
+    const run = makeRun({ task_outputs: [{ position: 0, task_name: 'Research', agent_role: '', raw: 'one', reused_from_run_id: 'gone-run-1', reused_from_unavailable: true }] })
+    renderAt(<OutputsTab run={run} timeline={noTimeline} />)
+    expect(screen.getByText(/reused from an earlier run that is no longer available/)).toBeTruthy()
+    expect(screen.queryByRole('link')).toBeNull()
   })
 
   it('downloads a card as a safely named markdown file', () => {

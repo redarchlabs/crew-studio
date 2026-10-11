@@ -88,6 +88,8 @@ func (f *fakeAPI) Do(_ context.Context, _ *auth.TokenInfo, req Request) (int, []
 		return envelope(200, map[string]any{"ok": true})
 	case "POST /api/crews/" + crewID + "/runs":
 		return envelope(201, map[string]any{"id": runID, "status": "queued"})
+	case "POST /api/runs/" + runID + "/resume":
+		return envelope(201, map[string]any{"id": "resumed", "status": "queued", "resumed_from_run_id": runID})
 	case "GET /api/runs/" + runID:
 		return envelope(200, map[string]any{"id": runID, "status": "succeeded", "output": "done", "spec": map[string]any{"huge": true}})
 	case "GET /api/tools":
@@ -159,7 +161,7 @@ func TestToolListAndAnnotations(t *testing.T) {
 		byName[tool.Name] = tool
 	}
 	for _, name := range []string{"whoami", "describe_kind", "list_items", "get_item", "create_item", "update_item",
-		"delete_item", "get_settings", "update_settings", "validate_crew", "start_run", "get_run", "list_history",
+		"delete_item", "get_settings", "update_settings", "validate_crew", "start_run", "resume_run", "get_run", "list_history",
 		"test_connection", "get_people_map", "sync_people_map", "link_person", "list_crew_connections", "set_crew_connections",
 		"preview_watch", "run_schedule_now", "get_pmo_setup_options", "setup_pmo"} {
 		if byName[name] == nil {
@@ -299,6 +301,15 @@ func TestSettingsRunsAndHistory(t *testing.T) {
 		"idempotency_key": "retry-1"})
 	if isErr || api.last().body["inputs"].(map[string]any)["topic"] != "x" || api.last().idempotencyKey != "retry-1" {
 		t.Errorf("start = %s, %+v", text, api.last())
+	}
+	text, isErr = callTool(t, cs, "resume_run", map[string]any{"run_id": runID, "budget_usd": 2, "use_current": true,
+		"idempotency_key": "resume-1"})
+	if isErr || !strings.Contains(text, "resumed_from_run_id") || api.last().body["budget_usd"] != 2.0 ||
+		api.last().body["use_current"] != true || api.last().idempotencyKey != "resume-1" {
+		t.Errorf("resume = %s, %+v", text, api.last())
+	}
+	if gotThrough(cs, "resume_run", map[string]any{"run_id": "not-a-uuid"}) {
+		t.Error("run_id must be a UUID")
 	}
 	text, isErr = callTool(t, cs, "get_run", map[string]any{"run_id": runID})
 	if isErr || strings.Contains(text, "huge") || !strings.Contains(text, "done") {

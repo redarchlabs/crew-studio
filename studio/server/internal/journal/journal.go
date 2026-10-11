@@ -261,6 +261,8 @@ func (b *builder) entry(ev model.RunEvent, responses map[int]string) (Entry, boo
 	switch ev.Type {
 	case "run_status":
 		e.Kind, e.Title, e.Body = "run", "Run "+str(p, "status"), clip(str(p, "error"), maxBodyLen)
+	case "run_resumed":
+		e.Kind, e.Title, e.Body = "run", resumedTitle(p), resumedBody(p)
 	case "crew_started":
 		e.Kind, e.Title = "run", "Crew started: "+str(p, "crew_name")
 	case "crew_completed":
@@ -374,4 +376,31 @@ func (b *builder) count(ev model.RunEvent, e Entry) {
 	case "search", "video":
 		a.CostUSD += e.CostUSD
 	}
+}
+
+// resumedTitle and resumedBody describe a run_resumed event: which tasks the run reused from the run it resumed.
+func resumedTitle(p map[string]any) string {
+	start := int(num(p, "start_position"))
+	if start == 1 {
+		return "Resumed: reused task 1 from the earlier run"
+	}
+	return fmt.Sprintf("Resumed: reused tasks 1–%d from the earlier run", start)
+}
+
+func resumedBody(p map[string]any) string {
+	var lines []string
+	if names, ok := p["reused_tasks"].([]any); ok {
+		for _, n := range names {
+			if s, ok := n.(string); ok {
+				lines = append(lines, "Reused: "+s)
+			}
+		}
+	}
+	if files := int(num(p, "restored_files")); files > 0 {
+		lines = append(lines, fmt.Sprintf("Restored %d files from the earlier run's workspace", files))
+	}
+	if msg := str(p, "error"); msg != "" {
+		lines = append(lines, msg)
+	}
+	return clip(strings.Join(lines, "\n"), maxBodyLen)
 }

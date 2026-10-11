@@ -23,6 +23,7 @@ import { DebugTab } from './detail/DebugTab'
 import { QuestionsPanel } from './detail/QuestionsPanel'
 import { useAttempt } from './detail/useAttempt'
 import { WorkOrderHeader, type HeaderBusy } from './detail/WorkOrderHeader'
+import { ResumeRunModal } from '../runs/ResumeRunModal'
 import { WorkflowTab } from './detail/WorkflowTab'
 import { useTargetCatalog } from './target/useTargetCatalog'
 import { woNumber } from './workOrderLabels'
@@ -46,6 +47,7 @@ function WorkOrderDetail({ workOrder: wo, reload, patch }: DetailProps) {
   const [params, setParams] = useSearchParams()
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState<HeaderBusy>(null)
+  const [resuming, setResuming] = useState(false)
   const runs = wo.runs ?? []
   const wanted = params.get('run')
   const runId = runs.some((r) => r.id === wanted) ? wanted : (wo.current_run_id ?? runs[0]?.id ?? null)
@@ -62,6 +64,8 @@ function WorkOrderDetail({ workOrder: wo, reload, patch }: DetailProps) {
     }, { replace: true })
 
   const isCurrent = runId !== null && runId === wo.current_run_id
+  // Only the latest attempt can be resumed; the server says where (run detail's "resumable")
+  const resumable = isCurrent && attempt.run?.resumable ? attempt.run.resumable : null
   const status = isCurrent && attempt.status ? attempt.status : wo.status
   const spent = attempt.live ? (attempt.timeline.spentUsd ?? attempt.run?.cost_usd ?? 0) : (attempt.run?.cost_usd ?? attempt.timeline.spentUsd ?? 0)
 
@@ -136,7 +140,20 @@ function WorkOrderDetail({ workOrder: wo, reload, patch }: DetailProps) {
         onCancel={() => void cancel()}
         onEdit={() => setEditing(true)}
         onDelete={() => void remove()}
+        resumable={resumable}
+        onResume={() => setResuming(true)}
       />
+      {resuming && attempt.run && resumable && (
+        <ResumeRunModal
+          run={{ ...attempt.run, resumable }}
+          onClose={() => setResuming(false)}
+          onResumed={(run) => {
+            setResuming(false)
+            notifySuccess(`Started attempt ${wo.run_count + 1}, resuming from task ${resumable.start_position + 1}`)
+            onRunStarted(run)
+          }}
+        />
+      )}
       {runs.length > 1 && <AttemptSelector runs={runs} selectedId={runId} liveStatus={attempt.status} onSelect={(id) => setParam({ run: id })} />}
       {wo.status === 'draft' || !runId ? (
         <div className="flex flex-col gap-4">

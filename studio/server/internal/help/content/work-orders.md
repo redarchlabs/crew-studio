@@ -4,7 +4,7 @@ category: Console
 order: 20
 permissions: work_orders.view
 summary: How to find work orders, read what each attempt did, and (with the right access) create, re-run, cancel and delete them.
-keywords: work order, compact, compact context, context, tokens, WO, request, job, conversation, follow up, ask, feedback, revise, revision, improve, brief, attachments, files, screenshots, paste, inputs, target, crew, crew picker, single task, one-task crew, make a crew, budget, draft, submit, attempt, re-run, retry, journal, workflow, diagram, swimlane, sequence, transcript, output, result, cancel, delete
+keywords: work order, compact, compact context, context, tokens, WO, request, job, conversation, follow up, ask, feedback, revise, revision, improve, brief, attachments, files, screenshots, paste, inputs, target, crew, crew picker, single task, one-task crew, make a crew, budget, draft, submit, attempt, re-run, retry, resume, resume from task, journal, workflow, diagram, swimlane, sequence, transcript, output, result, cancel, delete
 ---
 A work order is a request for a [crew](/help/crews) to do something. It holds a written brief, any files the agents should use, the inputs the crew needs, and a budget. Each time a work order is run, Crew Studio records an **attempt** you can inspect afterwards: what each agent did, the files they wrote and the final result.
 
@@ -117,6 +117,8 @@ Files upload once a crew is chosen. The first file you attach saves a draft auto
 ### Editing and re-running
 
 On a finished or draft work order, click **Edit** to change it, then **Save changes**, or **Save & re-run** to start a new attempt. **Re-run** starts another attempt with the current details. Changes affect only future attempts. You cannot edit while an attempt is queued or running.
+
+When the latest attempt failed or was cancelled after finishing some of its tasks, the header also shows **Resume from task N**. It starts a new attempt that reuses the finished tasks' outputs at no cost and runs the rest, starting with the task that failed. You can keep the settings the attempt started with or use the crew's current ones, and set the budget. See [Resuming a failed run](/help/runs#resuming-a-failed-run).
 
 If a work order's crew has been deleted, the list and header still show the crew's name, but the work order has no target. It cannot run again until you **Edit** it and pick another crew.
 

@@ -345,6 +345,38 @@ because chat budgets are counted from it.
 
 `POST /runs/{id}/cancel` (`runs.cancel`) stops a queued or running run. Returns the updated `Run`.
 
+`POST /runs/{id}/resume` (`crews.run`; for a work order's attempt `work_orders.create`, and only its latest attempt) resumes
+a **failed or cancelled crew run**. Body `{ budget_usd?, use_current?, callback_url? }`, and an optional
+`Idempotency-Key` (scoped to the run being resumed). A new run starts at the first task the earlier run did not finish:
+the outputs of the tasks before it are copied into the new run (`reused_from_run_id` on each, at no cost) and handed on
+as context, so those tasks are not run or paid for again; the task that failed runs again from the start. The new run
+has `resumed_from_run_id` and `resume_position` and the same inputs; it is filed under the crew's areas as they are
+now (a work order's attempt under the work order's), and for a work order it is the next attempt (`trigger_type:
+"work_order"`). As for starting a run, the crew must still exist and be in your areas (`422` otherwise). By default it
+uses the earlier run's frozen agents, tasks and LLMs, unless something they use was taken away since: an LLM that was
+deleted, or a tool that no longer exists or is no longer available (`422`, listing each). `use_current: true` freezes the
+crew as it is now instead (`422` unless the finished tasks are still the crew's first tasks, in order and unchanged:
+same name, description, expected output, agent and context, and their agents' role, goal, backstory, tools, iterations
+and delegation, with at least one task after them; an agent's LLM may change). `budget_usd` defaults to the earlier run's budget and limits the new run's own spending, so each resume of a
+chain has a budget of its own. The files the earlier run's agents wrote are put back in the new workspace, within the
+limits a run's own files have, and a `run_resumed` event (`from_run_id`, `start_position`, `reused_tasks`,
+`restored_files`, and `error` naming the files that could not be restored, or saying the earlier run was deleted)
+opens its journal. With an `Idempotency-Key`, a repeat answers `200` with the first resume before any other check, so a
+retry after the first succeeded still works. Answers `201 Run`, `200` for a repeated key, `409 not_resumable` (not a
+failed or cancelled crew run, no task finished, or every task finished), `409 not_latest_attempt`, `409 resume_active`
+while an earlier resume of the run is still queued or running, and `422` for a bad budget or an input file that was
+deleted. `GET /runs/{id}` says where a run can be resumed in `resumable` (left out when it cannot be, or not by you),
+with what the run already spent on the task that runs again (`spent_on_task_usd`) and `warnings` such as a provider key
+that is no longer set for an LLM the run used.
+Run detail names only runs you may open: `resumed_from_run_id` and `resumed_by` leave the others out, and a reused
+output from a deleted run or one you may not open has `reused_from_unavailable: true`.
+
+Each task's output is saved as the task finishes, so a run that is killed, times out or stops with the service keeps
+the work it finished and can be resumed. `task_outputs[].cost_usd` is what the task cost: its LLM calls, searches and
+videos, summed by task (a compaction summary counts towards the task whose context it compacted); for a reused output,
+what it cost when it ran. `task_costs` on run detail has the same sums for every task the run worked on, by task name,
+including one that did not finish.
+
 `POST /runs/{id}/compact` (`runs.cancel`, or `work_orders.cancel` for a work order's attempt; body `{}`) asks a running
 crew run to **compact its agents' context**: before each agent's next LLM call, its conversation on the task so far is
 replaced by a summary its own model writes, keeping the system prompt, the task prompt and the latest step. Later
@@ -386,8 +418,19 @@ type Run = {
   created_at: string
   started_at: string | null
   finished_at: string | null
-  task_outputs?: { position: number; task_name: string; agent_role: string; raw: string }[]  // always present on GET /runs/{id}
+  task_outputs?: { position: number; task_name: string; agent_role: string; raw: string
+                   cost_usd?: number               // what the task cost when it ran (left out for older runs)
+                   reused_from_run_id?: string     // a resumed run copied this output from the run that produced it
+                   reused_from_unavailable?: boolean  // that run was deleted, or is not one you may open
+                 }[]                               // always present on GET /runs/{id}
   spec?: RunSpec               // only on GET /runs/{id}
+  // Only on GET /runs/{id}:
+  resumed_from_run_id?: string // the run this one resumed
+  resume_position?: number     // the first task (from 0) it ran
+  resumed_by?: string[]        // runs that resumed this one, newest first
+  resumable?: { start_position: number; task_name: string; reused_tasks: number; reused_cost_usd: number
+                spent_on_task_usd: number; warnings: string[] }
+  task_costs?: Record<string, number>  // what the run spent on each task it worked on, by task name
 }
 
 // Everything the run was started with, frozen at start so later edits do not change history
@@ -402,6 +445,9 @@ type RunSpec = {
   budget_usd: number
   work_order?: { id: string; number: number; title: string; brief: string;
                  attachments: { id: string; filename: string; content_type: string; size_bytes: number; path: string }[] }
+  // A resumed run: the tasks before start_position are not run; their outputs are handed on as context
+  resume?: { from_run_id: string; start_position: number
+             outputs: { position: number; task_name: string; agent_role: string; raw: string; cost_usd?: number; reused_from_run_id?: string }[] }
 }
 ```
 
@@ -1843,6 +1889,7 @@ as `mcp_change` with `method`, `path`, `status` and `key_id`.
 | `update_item` | reads the item, replaces only the named fields, `PUT`s the result and returns each changed field before and after; `expected_updated_at` refuses a stale write, `dry_run` previews |
 | `get_settings`, `update_settings` | the same, for settings |
 | `validate_crew`, `start_run`, `get_run` | `GET /crews/{id}/validate`, `POST /crews/{id}/runs` (its `idempotency_key` argument is sent as `Idempotency-Key`), `GET /runs/{id}` without `spec` |
+| `resume_run` | `POST /runs/{id}/resume` with `budget_usd` and `use_current` (its `idempotency_key` argument is sent as `Idempotency-Key`) |
 | `list_history` | `GET /history`, newest first, at most 100 |
 | `test_connection` | `POST /connections/{id}/test` |
 | `get_people_map`, `sync_people_map`, `link_person` | `GET /connections/{id}/people`, `POST /connections/{id}/people/sync`, `PUT /connections/{id}/people/{accountId}` with `{ user_id }` |

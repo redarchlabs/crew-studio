@@ -148,6 +148,12 @@ type TaskOutput struct {
 	TaskName  string `json:"task_name"`
 	AgentRole string `json:"agent_role"`
 	Raw       string `json:"raw"`
+	// CostUSD is what the task cost when it ran (unknown for runs from before it was recorded)
+	CostUSD *float64 `json:"cost_usd,omitempty"`
+	// ReusedFromRunID is the run that produced this output when a resumed run copied it instead of running the task;
+	// ReusedFromUnavailable says that run has since been deleted or is not one the reader may open
+	ReusedFromRunID       *string `json:"reused_from_run_id,omitempty"`
+	ReusedFromUnavailable bool    `json:"reused_from_unavailable,omitempty"`
 }
 
 // RunSpec is everything a run started with, frozen so later edits do not rewrite history.
@@ -169,6 +175,8 @@ type RunSpec struct {
 	// Escalation is the crew's rules for asking a person, when escalation is on; for a hand-off, the agent's question
 	// settings when its questions are on (docs/agent-chat-handoffs-design.md, section 6); never for chat turns
 	Escalation *EscalationSpec `json:"escalation,omitempty"`
+	// Resume is set when the run resumes a failed or cancelled run: the tasks before StartPosition are not run again
+	Resume *ResumeSpec `json:"resume,omitempty"`
 }
 
 type Run struct {
@@ -197,6 +205,14 @@ type Run struct {
 	// A pointer so run detail always includes the list (even empty) while run lists leave it out
 	TaskOutputs *[]TaskOutput `json:"task_outputs,omitempty"`
 	Spec        *RunSpec      `json:"spec,omitempty"`
+	// Run detail only: the run this one resumed and the first task it ran, the runs that resumed this one (newest
+	// first), and where this one could be resumed from now
+	ResumedFromRunID *string     `json:"resumed_from_run_id,omitempty"`
+	ResumePosition   *int        `json:"resume_position,omitempty"`
+	ResumedBy        *[]string   `json:"resumed_by,omitempty"`
+	Resumable        *ResumeHint `json:"resumable,omitempty"`
+	// TaskCosts is what the run spent on each task it worked on, by task name, finished or not (run detail only)
+	TaskCosts map[string]float64 `json:"task_costs,omitempty"`
 }
 
 type RunEvent struct {

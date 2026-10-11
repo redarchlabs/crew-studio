@@ -153,6 +153,23 @@ components:
               task_name: { type: string }
               agent_role: { type: string }
               raw: { type: string }
+              cost_usd: { type: number, description: "What the task cost: its LLM calls, searches and videos (for a reused output, when it ran)" }
+              reused_from_run_id: { type: string, format: uuid, description: "Set when a resumed run copied this output from the run that produced it" }
+              reused_from_unavailable: { type: boolean, description: "That run was deleted, or is not one you may open" }
+        resumed_from_run_id: { type: string, format: uuid, description: "Run detail: the run this one resumed" }
+        resume_position: { type: integer, description: "Run detail: the first task (from 0) a resumed run ran" }
+        resumed_by: { type: array, items: { type: string, format: uuid }, description: "Run detail: runs that resumed this one, newest first" }
+        resumable:
+          type: object
+          description: "Run detail: where you could resume this run from now; left out when it cannot be resumed (or not by you)"
+          properties:
+            start_position: { type: integer }
+            task_name: { type: string }
+            reused_tasks: { type: integer }
+            reused_cost_usd: { type: number }
+            spent_on_task_usd: { type: number, description: "What the run already spent on the task that runs again" }
+            warnings: { type: array, items: { type: string }, description: "Reasons the remaining tasks are likely to fail as they were, such as a missing provider key" }
+        task_costs: { type: object, additionalProperties: { type: number }, description: "Run detail: what the run spent on each task it worked on, by task name" }
     ChatSettings:
       type: object
       properties:
@@ -1168,6 +1185,31 @@ paths:
         "200": { description: "{ compact_requests }" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { description: "run_not_running, or chat_turn (a chat turn or hand-off)", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+  /runs/{id}/resume:
+    post:
+      tags: [Runs]
+      summary: "Resume a failed or cancelled crew run: a new run reuses the finished tasks' outputs (at no cost) and runs the rest (crews.run, or work_orders.create for the latest attempt of a work order)"
+      description: |
+        The new run starts at the first task the earlier run did not finish and links back to it (`resumed_from_run_id`).
+        It uses the earlier run's frozen agents, tasks, LLMs and inputs, or with `use_current` the crew as it is now (the
+        finished tasks must still be the crew's first tasks). `budget_usd` defaults to the earlier run's budget and covers
+        the new run's own spending. The task that failed runs again from the start.
+      parameters: [{ $ref: "#/components/parameters/id" }, { $ref: "#/components/parameters/idempotencyKey" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                budget_usd: { type: number }
+                use_current: { type: boolean, description: "Run the remaining tasks with the crew's current settings" }
+                callback_url: { type: string, description: Service accounts only }
+      responses:
+        "201": { description: The new run, content: { application/json: { schema: { $ref: "#/components/schemas/Run" } } } }
+        "200": { description: Earlier resume of this run with the same Idempotency-Key }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { description: "not_resumable, not_latest_attempt, resume_active, or the work order is queued or running", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
+        "422": { description: "Bad budget; the crew was deleted or is outside your areas; an LLM or tool the run used was taken away; the finished tasks changed (use_current); or an input file was deleted", content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } } }
   /runs/{id}/journal:
     get:
       tags: [Runs]

@@ -12,17 +12,20 @@ import { useAuth } from '../../lib/auth'
 import { usd } from '../../lib/format'
 import { notifyError } from '../../lib/notify'
 
-type RunCrewFormProps = { crew: Crew; onCancel: () => void; formId?: string }
+/** Starting values, for "Run again": an earlier run's inputs and budget */
+export type RunCrewInitial = { inputs: Record<string, string>; budget_usd: number }
 
-function initialValues(crew: Crew): Record<string, string> {
-  return Object.fromEntries(crew.inputs.map((i) => [i.key, i.default]))
+type RunCrewFormProps = { crew: Crew; onCancel: () => void; formId?: string; initial?: RunCrewInitial }
+
+function initialValues(crew: Crew, initial?: RunCrewInitial): Record<string, string> {
+  return Object.fromEntries(crew.inputs.map((i) => [i.key, initial?.inputs[i.key] ?? i.default]))
 }
 
 /** Input fields for each crew input plus an optional budget override; starts a run and opens it. */
-export function RunCrewForm({ crew, onCancel, formId = 'run-crew-form' }: RunCrewFormProps) {
+export function RunCrewForm({ crew, onCancel, formId = 'run-crew-form', initial }: RunCrewFormProps) {
   const navigate = useNavigate()
-  const [values, setValues] = useState<Record<string, string>>(() => initialValues(crew))
-  const [budget, setBudget] = useState<number | null>(null)
+  const [values, setValues] = useState<Record<string, string>>(() => initialValues(crew, initial))
+  const [budget, setBudget] = useState<number | null>(initial && initial.budget_usd !== crew.budget_usd ? initial.budget_usd : null)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [serverErrors, setServerErrors] = useState<string[]>([])
   const [starting, setStarting] = useState(false)
@@ -77,10 +80,10 @@ export function RunCrewForm({ crew, onCancel, formId = 'run-crew-form' }: RunCre
   )
 }
 
-export function RunCrewModal({ crew, onClose }: { crew: Crew; onClose: () => void }) {
+export function RunCrewModal({ crew, onClose, initial }: { crew: Crew; onClose: () => void; initial?: RunCrewInitial }) {
   return (
     <Modal title={`Run ${crew.name}`} onClose={onClose}>
-      <RunCrewForm crew={crew} onCancel={onClose} />
+      <RunCrewForm crew={crew} onCancel={onClose} initial={initial} />
     </Modal>
   )
 }

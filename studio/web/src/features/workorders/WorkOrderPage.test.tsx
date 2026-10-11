@@ -9,10 +9,12 @@ import { initialTimeline, type TimelineState } from '../runs/timeline/timelineRe
 import type { Attempt } from './detail/useAttempt'
 import { makeAttachment, makeJournal, makeRun, makeWorkOrder, renderRoute, setPermissions } from './testUtils'
 import WorkOrderPage from './WorkOrderPage'
+import { resumeApi } from '../../api/endpoints.resume'
 
 vi.mock('../../api/endpoints', async () => (await import('./testUtils')).endpointsMock())
 vi.mock('../../lib/auth', async () => (await import('./testUtils')).authMock())
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
+vi.mock('../../api/endpoints.resume', () => ({ resumeApi: { resume: vi.fn() } }))
 
 const h = vi.hoisted(() => ({ attempt: { current: null as unknown as Attempt }, useAttempt: vi.fn() }))
 vi.mock('./detail/useAttempt', () => ({
@@ -280,6 +282,30 @@ describe('actions', () => {
     expect(toast.success).toHaveBeenCalledWith('Started attempt 2')
     // work order refetched after starting
     await waitFor(() => expect(api.get.mock.calls.length).toBeGreaterThanOrEqual(2))
+  })
+
+  it('resumes the latest attempt from where it failed and selects the new attempt', async () => {
+    const hint = { start_position: 1, task_name: 'Write', reused_tasks: 1, reused_cost_usd: 0.2 }
+    const failedRun = makeRun({ id: 'r1', status: 'failed', resumable: hint })
+    h.attempt.current = makeAttempt({ run: failedRun, status: 'failed' })
+    vi.mocked(resumeApi.resume).mockResolvedValue(makeRun({ id: 'r2', status: 'queued' }))
+    const view = renderPage(finished({ status: 'failed', runs: [failedRun] }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume from task 2' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Resume from task 2' })[1])
+    await waitFor(() => expect(view.location().search).toBe('?run=r2'))
+    expect(resumeApi.resume).toHaveBeenCalledWith('r1', { use_current: false })
+    expect(toast.success).toHaveBeenCalledWith('Started attempt 2, resuming from task 2')
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('closes the resume dialog without resuming', async () => {
+    const failedRun = makeRun({ id: 'r1', status: 'failed', resumable: { start_position: 1, task_name: 'Write', reused_tasks: 1, reused_cost_usd: 0 } })
+    h.attempt.current = makeAttempt({ run: failedRun, status: 'failed' })
+    renderPage(finished({ status: 'failed', runs: [failedRun] }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume from task 2' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(resumeApi.resume).not.toHaveBeenCalled()
   })
 
   it('reports a failed submit and re-enables the button', async () => {

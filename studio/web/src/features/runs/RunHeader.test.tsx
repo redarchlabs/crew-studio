@@ -5,6 +5,9 @@ import { RunHeader } from './RunHeader'
 import type { StreamState } from './timeline/useRunTimeline'
 import type { Run, RunStatus } from '../../api/types'
 import { makeRun, makeSpec, renderAt } from './testUtils'
+import { setPermissions } from '../workorders/testUtils'
+
+vi.mock('../../lib/auth', async () => (await import('../workorders/testUtils')).authMock())
 
 afterEach(() => {
   cleanup()
@@ -16,6 +19,15 @@ function header(run: Run, over: Partial<{ status: RunStatus; spent: number; budg
 }
 
 describe('RunHeader', () => {
+  it('offers resuming a finished run and links resumed runs', () => {
+    setPermissions('crews.run')
+    header(makeRun({ status: 'failed', resumable: { start_position: 2, task_name: 'Write', reused_tasks: 2, reused_cost_usd: 0 },
+      resumed_from_run_id: 'run-before-1234', resume_position: 1 }))
+    expect(screen.getByRole('button', { name: 'Resume from task 3' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Run again' })).toBeTruthy()
+    expect(screen.getByText('run-befo').closest('a')?.getAttribute('href')).toBe('/runs/run-before-1234')
+  })
+
   it('shows the crew name linked to the crew, status, id and a back link', () => {
     header(makeRun({ id: 'run-xyz' }))
     expect(screen.getByText('Research crew').closest('a')?.getAttribute('href')).toBe('/crews/crew-1')

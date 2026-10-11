@@ -37,7 +37,7 @@ and SMTP server, `E2E_FAKE_MCP_PORT` (8098) for the fake outside MCP server (`ha
 `fake_llm.py` speaks OpenAI chat completions, the Responses API and Anthropic messages, answers with
 `Thought: I now know the final answer` / `Final Answer: ...` plus token usage, and appends every request to
 `out/logs/fake-llm-requests.jsonl` (`support/llmlog.ts` reads it, e.g. to assert a pasted image arrived as a base64 image
-part). A prompt containing `E2E_SLOW_MARKER` is held for 90 s (cancel tests); `E2E_FAIL_MARKER` gets HTTP 500.
+part). A prompt containing `E2E_SLOW_MARKER` is held for 90 s (cancel tests); `E2E_FAIL_MARKER` gets HTTP 500; `E2E_QUOTA_MARKER` gets HTTP 429 `insufficient_quota` while `POST /__quota/exhaust` is in effect (until `POST /__quota/restore`), for the resume spec.
 
 ## Projects and fixtures
 

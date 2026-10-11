@@ -12,6 +12,8 @@ model was sent (for example that a pasted image arrived as a base64 image part).
 Behaviour switches, found anywhere in the request text:
   E2E_SLOW_MARKER   the reply is delayed by --slow-seconds (default 90) so a run can be cancelled
   E2E_FAIL_MARKER   the server answers HTTP 500
+  E2E_QUOTA_MARKER  while the quota is exhausted, HTTP 429 insufficient_quota (as a provider out of credits does);
+                    POST /__quota/exhaust and POST /__quota/restore switch it (it starts restored)
   E2E_CHAT_PROPOSE  (chat completions with tools) the first call asks for the start_work_order tool
   E2E_CHAT_NOTE     (chat completions with tools) the first call asks for the propose_note_change tool
   E2E_KM_SAVE       (chat completions with tools) the first call asks for the Save to Knowledge (KM2) tool
@@ -47,6 +49,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SLOW_MARKER = "E2E_SLOW_MARKER"
 FAIL_MARKER = "E2E_FAIL_MARKER"
+QUOTA_MARKER = "E2E_QUOTA_MARKER"
+# Whether requests with QUOTA_MARKER are refused for lack of credits (see POST /__quota/...)
+QUOTA = {"exhausted": False}
 ANSWER_TAG = "FAKE-LLM-ANSWER"
 # Scripted chat tool calls: marker -> (tool, arguments)
 TOOL_SCRIPTS = {
@@ -255,6 +260,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("content-length") or 0)
+        if self.path.startswith("/__quota/"):
+            with LOCK:
+                QUOTA["exhausted"] = self.path.startswith("/__quota/exhaust")
+                return self._send(200, dict(QUOTA))
         try:
             req = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
@@ -274,6 +283,9 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(json.dumps(record) + "\n")
         if FAIL_MARKER in text:
             return self._send(500, {"error": {"message": "forced failure", "type": "server_error"}})
+        if QUOTA_MARKER in text and QUOTA["exhausted"]:
+            return self._send(429, {"error": {"message": "You have no credits remaining.", "type": "insufficient_quota",
+                                              "param": None, "code": "insufficient_quota"}})
         if SLOW_MARKER in text:
             deadline = time.time() + ARGS.slow_seconds
             while time.time() < deadline:

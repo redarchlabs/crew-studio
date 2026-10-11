@@ -1,6 +1,6 @@
 import { Link } from 'react-router'
-import { ChevronLeft, CircleStop, Pencil, Radio, RotateCcw, Send, Trash2 } from 'lucide-react'
-import type { Run, RunStatus, WorkOrder, WorkOrderStatus } from '../../../api/types'
+import { ChevronLeft, CircleStop, Pencil, Radio, RotateCcw, Send, StepForward, Trash2 } from 'lucide-react'
+import type { ResumeHint, Run, RunStatus, WorkOrder, WorkOrderStatus } from '../../../api/types'
 import { AreaChips } from '../../../components/AreaChips'
 import { Button } from '../../../components/Button'
 import { ConfirmButton, HistoryLink, Stat } from '../../../components/misc'
@@ -8,6 +8,7 @@ import { useAuth } from '../../../lib/auth'
 import { between, dateTime, durationMs, int } from '../../../lib/format'
 import { useNow } from '../../../lib/useNow'
 import { BudgetBar } from '../../runs/BudgetBar'
+import { resumeLabel } from '../../runs/ResumeRunModal'
 import type { SpendTally } from '../../runs/timeline/spendTally'
 import type { StreamState } from '../../runs/timeline/useRunTimeline'
 import { CrewLabel, isActive, SourceChip, WoBadge, WorkOrderStatusBadge } from '../workOrderLabels'
@@ -29,10 +30,13 @@ type WorkOrderHeaderProps = {
   onCancel: () => void
   onEdit: () => void
   onDelete: () => void
+  /** Set when the latest attempt failed or was cancelled part-way and can be resumed */
+  resumable?: ResumeHint | null
+  onResume?: () => void
 }
 
 /** Title row with actions, then who/what/where, then the selected attempt's spend, duration and tokens. */
-export function WorkOrderHeader({ workOrder: wo, status, run, runStatus, spent, budgetState, tally, stream, busy, onSubmit, onCancel, onEdit, onDelete }: WorkOrderHeaderProps) {
+export function WorkOrderHeader({ workOrder: wo, status, run, runStatus, spent, budgetState, tally, stream, busy, onSubmit, onCancel, onEdit, onDelete, resumable, onResume }: WorkOrderHeaderProps) {
   const { can } = useAuth()
   const active = isActive(status)
   const runActive = isActive(runStatus)
@@ -72,8 +76,13 @@ export function WorkOrderHeader({ workOrder: wo, status, run, runStatus, spent, 
           {active && can('work_orders.cancel') && (
             <Button variant="danger" icon={<CircleStop className="size-4" />} busy={busy === 'cancel'} disabled={busyAny} onClick={onCancel}>Cancel</Button>
           )}
+          {!active && can('work_orders.create') && resumable && onResume && (
+            <Button variant="primary" icon={<StepForward className="size-4" />} disabled={busyAny} title={`Reuses what the attempt finished and runs ${resumable.task_name} and the rest`} onClick={onResume}>
+              {resumeLabel(resumable)}
+            </Button>
+          )}
           {!active && can('work_orders.create') && (
-            <Button variant="primary" icon={status === 'draft' ? <Send className="size-4" /> : <RotateCcw className="size-4" />} busy={busy === 'submit'} disabled={busyAny} onClick={onSubmit}>
+            <Button variant={resumable && onResume ? 'secondary' : 'primary'} icon={status === 'draft' ? <Send className="size-4" /> : <RotateCcw className="size-4" />} busy={busy === 'submit'} disabled={busyAny} onClick={onSubmit}>
               {status === 'draft' ? 'Submit' : 'Re-run'}
             </Button>
           )}

@@ -41,6 +41,13 @@ type startRunArgs struct {
 	IdempotencyKey string            `json:"idempotency_key,omitempty" jsonschema:"any unique text; retrying with the same key returns the first run instead of starting another"`
 }
 
+type resumeRunArgs struct {
+	RunID          string   `json:"run_id" jsonschema:"the failed or cancelled run's id (a UUID)"`
+	BudgetUSD      *float64 `json:"budget_usd,omitempty" jsonschema:"spending limit for the new run's own spending in US dollars; leave out to use the earlier run's"`
+	UseCurrent     bool     `json:"use_current,omitempty" jsonschema:"run the remaining tasks with the crew's current agents, tasks and LLMs instead of the ones the run started with"`
+	IdempotencyKey string   `json:"idempotency_key,omitempty" jsonschema:"any unique text; retrying with the same key returns the first resume instead of starting another"`
+}
+
 type runArgs struct {
 	RunID string `json:"run_id" jsonschema:"the run's id (a UUID)"`
 }
@@ -69,6 +76,11 @@ func (t *tools) addOtherTools(s *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(false), OpenWorldHint: ptr(true)},
 		Description: "Start a real run of a crew. It calls paid models and tools and costs money: only do this when asked. " +
 			"Pass an idempotency_key so a retry cannot start a second run. Returns the queued run; follow it with get_run."}, t.startRun)
+	mcp.AddTool(s, &mcp.Tool{Name: "resume_run", Title: "Resume a failed run",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(false), OpenWorldHint: ptr(true)},
+		Description: "Resume a failed or cancelled crew run: a new run reuses the tasks it finished (at no cost) and runs the rest, " +
+			"starting with the task that failed. It calls paid models and costs money: only do this when asked. get_run's " +
+			"resumable field says where a run would resume. Pass an idempotency_key so a retry cannot start a second run."}, t.resumeRun)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_run", Title: "Get a run", Annotations: readOnly,
 		Description: "Read a run's status, cost, final output and each task's output."}, t.getRun)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_history", Title: "List changes", Annotations: readOnly,
@@ -132,6 +144,19 @@ func (t *tools) startRun(ctx context.Context, req *mcp.CallToolRequest, in start
 	}
 	body := map[string]any{"inputs": in.Inputs, "budget_usd": in.BudgetUSD}
 	data, err := t.send(ctx, req, Request{Method: http.MethodPost, Path: "/crews/" + in.CrewID + "/runs",
+		IdempotencyKey: in.IdempotencyKey}, body)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rawText(data)
+}
+
+func (t *tools) resumeRun(ctx context.Context, req *mcp.CallToolRequest, in resumeRunArgs) (*mcp.CallToolResult, any, error) {
+	if err := checkID("run_id", in.RunID); err != nil {
+		return nil, nil, err
+	}
+	body := map[string]any{"budget_usd": in.BudgetUSD, "use_current": in.UseCurrent}
+	data, err := t.send(ctx, req, Request{Method: http.MethodPost, Path: "/runs/" + in.RunID + "/resume",
 		IdempotencyKey: in.IdempotencyKey}, body)
 	if err != nil {
 		return nil, nil, err

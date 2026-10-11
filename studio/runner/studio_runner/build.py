@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from crewai import LLM, Agent, Crew, Process, Task
+from crewai.tasks.task_output import TaskOutput
+from pydantic import PrivateAttr
 
 from .human import AskHumanTool, Halt, escalation_note
 from .llm_compat import build_anthropic_llm, is_anthropic
@@ -34,6 +36,22 @@ def check_spec(spec: Any) -> None:
         raise SpecError("Run spec has no tasks.")
     if float(spec["budget_usd"]) <= 0:
         raise SpecError("Run budget must be more than $0.")
+
+
+def resume_start(spec: dict[str, Any]) -> int:
+    """The position of the first task a resumed run executes (0 when it is not a resume). Every task before it must
+    have the output the earlier run stored, so it is not run (or paid for) again."""
+    resume = spec.get("resume")
+    if not resume:
+        return 0
+    start = resume.get("start_position")
+    if not isinstance(start, int) or isinstance(start, bool) or not 0 <= start < len(spec["tasks"]):
+        raise SpecError("Resume must start at one of the run's tasks.")
+    have = {o.get("position") for o in resume.get("outputs") or []}
+    missing = [str(position + 1) for position in range(start) if position not in have]
+    if missing:
+        raise SpecError(f"Resume has no stored output for task {', '.join(missing)}.")
+    return start
 
 
 def interpolate(text: str, inputs: dict[str, str]) -> str:
@@ -66,7 +84,17 @@ def _build_llm(config: dict[str, Any]) -> Any:
 
 
 class StudioCrew(Crew):
-    """CrewAI's Crew without CrewAI's own "Save to memory" tool when memory is Studio's (see memory.py)."""
+    """CrewAI's Crew without CrewAI's own "Save to memory" tool when memory is Studio's (see memory.py). A resumed run
+    starts at _resume_start: CrewAI skips the tasks before it and passes their preset outputs on as context."""
+
+    _resume_start: int = PrivateAttr(default=0)
+
+    def _run_sequential_process(self) -> Any:
+        return self._execute_tasks(self.tasks, self._resume_start)
+
+    def _run_hierarchical_process(self) -> Any:
+        self._create_manager_agent()
+        return self._execute_tasks(self.tasks, self._resume_start)
 
     def _add_memory_tools(self, tools: list[Any], memory: Any) -> list[Any]:
         return hide_crewai_save_tool(super()._add_memory_tools(tools, memory), memory)
@@ -84,6 +112,8 @@ class BuiltCrew:
     tasks: list[Task]
     # Task name -> resolved agent role, for attributing task outputs
     task_agents: dict[str, str]
+    # Position of the first task this run executes; earlier ones were completed by the run it resumes
+    start: int = 0
 
 
 def _model_files(context: WorkOrderContext) -> dict[str, Any]:
@@ -99,6 +129,7 @@ def build_crew(spec: dict[str, Any], tools: ToolFactory, workspace: Path | None 
     """Builds the crew. state (the run-state client) and current_task (Listeners.current_task) are for memory and
     asking a person; halt is set when an unanswered question stops the run."""
     check_spec(spec)
+    start = resume_start(spec)
     work_order = build_context(spec.get("work_order"), workspace or Path("."))
     input_files = _model_files(work_order)
     inputs: dict[str, str] = spec["inputs"] or {}
@@ -156,6 +187,8 @@ def build_crew(spec: dict[str, Any], tools: ToolFactory, workspace: Path | None 
         if context:
             kwargs["context"] = context
         task = Task(**kwargs)
+        if position < start:
+            task.output = _stored_output(spec, position, task, task_agents.get(cfg["name"], ""))
         tasks[cfg["id"]] = task
         ordered.append(task)
 
@@ -173,4 +206,12 @@ def build_crew(spec: dict[str, Any], tools: ToolFactory, workspace: Path | None 
     memory = build_memory(spec, state, llms, first_llm, current_task)
     if memory is not None:
         crew_kwargs["memory"] = memory
-    return BuiltCrew(crew=StudioCrew(**crew_kwargs), tasks=ordered, task_agents=task_agents)
+    crew = StudioCrew(**crew_kwargs)
+    crew._resume_start = start
+    return BuiltCrew(crew=crew, tasks=ordered, task_agents=task_agents, start=start)
+
+
+def _stored_output(spec: dict[str, Any], position: int, task: Task, role: str) -> TaskOutput:
+    stored = next(o for o in spec["resume"]["outputs"] if o.get("position") == position)
+    return TaskOutput(description=task.description, name=task.name, expected_output=task.expected_output,
+                      raw=stored.get("raw") or "", agent=stored.get("agent_role") or role)

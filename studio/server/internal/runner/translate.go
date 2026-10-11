@@ -182,3 +182,18 @@ func readOutcome(eventType string, payload map[string]any) outcome {
 	}
 	return o
 }
+
+// finishedTask reads a task_completed event that says where its task sits among the run's tasks (runners from before
+// positions were reported do not, and their outputs are saved only with the final result). A position outside the
+// run's tasks is ignored.
+func finishedTask(e model.RunEvent, tasks int) (model.TaskOutput, bool) {
+	if e.Type != "task_completed" {
+		return model.TaskOutput{}, false
+	}
+	position, ok := e.Payload["position"].(float64)
+	if !ok || position < 0 || position >= float64(tasks) || position != float64(int(position)) {
+		return model.TaskOutput{}, false
+	}
+	return model.TaskOutput{Position: int(position), TaskName: str(e.Payload, "task_name"),
+		AgentRole: str(e.Payload, "agent_role"), Raw: str(e.Payload, "output")}, true
+}

@@ -71,6 +71,19 @@ class Listeners:
         # A hand-off's deadline and time limit in minutes (see handoff.py); no LLM call is made after it
         self._deadline: tuple[datetime, int] | None = None
         self._clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+        # The crew's tasks by identity -> position, so a finished task reports where it sits in the crew (the server
+        # saves its output straight away, for resuming a failed run). What a task cost is summed by the server from the
+        # task's LLM calls, searches and videos, which do not depend on when this thread pool runs a handler.
+        # id(task) -> (task, position); the task is kept so a reused id of another object is never mistaken for it
+        self._positions: dict[int, tuple[Any, int]] = {}
+
+    def set_task_positions(self, tasks: list[Any]) -> None:
+        self._positions = {id(task): (task, position) for position, task in enumerate(tasks)}
+
+    def _position(self, event: Any) -> int | None:
+        task = getattr(event, "task", None)
+        known = None if task is None else self._positions.get(id(task))
+        return known[1] if known is not None and known[0] is task else None
 
     def set_deadline(self, deadline: tuple[datetime, int] | None, clock: Callable[[], datetime] | None = None) -> None:
         """Stops the run's LLM calls once a hand-off passes its deadline; the halt (when there is one) says why."""
@@ -248,11 +261,11 @@ class Listeners:
 
     def on_task_completed(self, _source: Any, event: TaskCompletedEvent) -> None:
         output = getattr(event.output, "raw", None) if event.output is not None else None
-        self._emitter.emit(
-            "task_completed",
-            {"task_name": _task_name(event), "agent_role": _agent_role(event), "output": output or ""},
-            event.timestamp,
-        )
+        payload: dict[str, Any] = {"task_name": _task_name(event), "agent_role": _agent_role(event), "output": output or ""}
+        position = self._position(event)
+        if position is not None:
+            payload["position"] = position
+        self._emitter.emit("task_completed", payload, event.timestamp)
 
     def on_task_failed(self, _source: Any, event: TaskFailedEvent) -> None:
         self._emitter.emit(

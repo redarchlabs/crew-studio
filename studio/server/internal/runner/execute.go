@@ -63,6 +63,11 @@ func (m *Manager) execute(runID string, entry *activeRun) {
 		return
 	}
 
+	rec.tasks = len(spec.Tasks)
+	if spec.Resume != nil {
+		m.resumeWorkspace(entry.ctx, spec, paths.workspace, rec)
+	}
+
 	limit, overrun := runLimit(spec, m.proc.MaxDuration, time.Now())
 	runCtx, cancelTimeout := context.WithTimeout(entry.ctx, limit)
 	defer cancelTimeout()
@@ -139,6 +144,17 @@ func (m *Manager) finish(runID string, rec *recorder, res store.RunResult) {
 }
 
 const saveAttempts = 3
+
+// saveTaskOutput keeps a finished task's output straight away, so the work survives a run that is killed or stopped
+// before it reports its final result. A failure here is logged: the final result saves the output again.
+func (m *Manager) saveTaskOutput(runID string, o model.TaskOutput) {
+	clean := sanitizeResult(store.RunResult{TaskOutputs: []model.TaskOutput{o}}).TaskOutputs[0]
+	ctx, cancel := context.WithTimeout(context.Background(), dbWriteTimeout)
+	defer cancel()
+	if err := m.store.SaveTaskOutput(ctx, runID, clean); err != nil {
+		m.log.Error("save task output", "run_id", runID, "position", o.Position, "err", err)
+	}
+}
 
 func (m *Manager) saveResult(runID string, res store.RunResult) error {
 	var err error
@@ -353,6 +369,9 @@ func (m *Manager) runProcess(ctx context.Context, request []byte, workspace stri
 			go stopAfter(limitCtx, cmd.Process.Pid, exited, finishedGrace)
 		}
 		rec.record(t.Event, t.LLMCall)
+		if o, ok := finishedTask(t.Event, rec.tasks); ok {
+			m.saveTaskOutput(rec.runID, o)
+		}
 	}
 	waitErr := cmd.Wait()
 	close(exited)

@@ -7,6 +7,7 @@ import { Stat } from '../../components/misc'
 import { between, dateTime, durationMs, int } from '../../lib/format'
 import { useNow } from '../../lib/useNow'
 import { BudgetBar } from './BudgetBar'
+import { ResumeLinks, RunActions } from './RunActions'
 import type { StreamState } from './timeline/useRunTimeline'
 
 type RunHeaderProps = {
@@ -51,12 +52,17 @@ export function RunHeader({ run, status, spent, budgetState, stream, cancelling,
           </span>
         )}
         <span className="font-mono text-[11px] text-faint">{run.id}</span>
-        {active && (
+        {active ? (
           <Button className="ml-auto" variant="danger" icon={<CircleStop className="size-4" />} busy={cancelling} onClick={onCancel}>
             Cancel run
           </Button>
+        ) : (
+          <span className="ml-auto flex flex-wrap gap-2">
+            <RunActions run={run} />
+          </span>
         )}
       </div>
+      <ResumeLinks run={run} />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-[minmax(240px,1.4fr)_repeat(3,minmax(0,1fr))]">
         <BudgetBar spent={spent} budget={run.budget_usd} hardStopMultiplier={run.spec?.settings.hard_stop_multiplier} state={budgetState} />
         <Stat label="Duration" value={durationMs(duration)} sub={`started ${dateTime(run.started_at ?? run.created_at)}`} />

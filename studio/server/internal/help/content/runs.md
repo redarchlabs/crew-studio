@@ -4,7 +4,7 @@ category: Console
 order: 30
 permissions: runs.view
 summary: How to find runs and read a run's page: the live interaction graph, timeline, LLM prompts and responses, outputs, logs, frozen spec and budget.
-keywords: run, runs, execution, history, status, live, interaction graph, timeline, events, LLM calls, prompt, response, tokens, cost, spend, budget, hard stop, searches stopped, outputs, logs, console, spec, callbacks, transcript, cancel, delete, stop
+keywords: run, runs, execution, history, status, live, resume, resume from task, run again, retry, failed run, reuse, reused, interaction graph, timeline, events, LLM calls, prompt, response, tokens, cost, spend, budget, hard stop, searches stopped, outputs, logs, console, spec, callbacks, transcript, cancel, delete, stop
 ---
 A run is one execution of a crew. A run can be started by a person, by a work order (each attempt is a run), by a schedule, by a webhook or through the API. Crew Studio keeps everything about each run: every event, every LLM prompt and response, tool calls, delegations, costs and the exact configuration it ran with.
 
@@ -56,7 +56,9 @@ A table of every call to a model: number, agent, task, model, prompt and complet
 
 ### Outputs
 
-The **Final output** and each task's output, as formatted text. Each has **Copy** and a **.md** download.
+The **Final output** and each task's output, as formatted text. Each has **Copy** and a **.md** download. Each task shows the agent that did it and what it cost (its LLM calls, searches and videos). In a resumed run, a task it reused says **reused from run** with a link to the run that did the work: it cost $0 in this run, and the card shows what it cost when it ran. If that run was deleted, or is not one you may open, the card says so instead of linking to it.
+
+Each task's output is saved the moment the task finishes, so a run that fails, is cancelled, times out or is stopped when Crew Studio restarts keeps the tasks it finished.
 
 ### Files
 
@@ -86,6 +88,29 @@ The **Spend** bar shows spend against the budget. It turns amber at 80% and red 
 ## Cancelling a run
 <!-- permissions: runs.cancel -->
 To stop a run that is queued or running, click **Cancel run** in the run's header, or **Cancel** on its row in the Runs list. A queued run is cancelled before it starts; a running one is stopped and marked cancelled. Its events and logs up to that point stay available.
+
+## Resuming a failed run
+<!-- permissions: crews.run, work_orders.create -->
+When a run fails or is cancelled part-way, for example because a provider ran out of credits, you do not have to pay for the finished tasks again. A finished run that can pick up where it stopped shows **Resume from task N** in its header, where N is the first task that did not finish.
+
+1. Fix what stopped the run, if you can (add credits, raise the budget, or change the model on the agent).
+2. Click **Resume from task N**.
+3. Choose the options:
+   - **Use the crew's current settings**: off, the remaining tasks run with the agents, tasks and LLMs the run started with. On, they run with the crew as it is now, for example after you switched an agent's model. The finished tasks must still be the crew's first tasks, in the same order, and neither they nor their agents may have been edited since, apart from an agent's LLM.
+   - **Budget (USD)**: what the new run may spend on its own work. Leave it empty to use the earlier run's budget. Each resume has a budget of its own. If the run stopped because it spent its budget, the dialog says so; raise the budget, or the new run may stop the same way.
+4. Click **Resume from task N**. The new run opens.
+
+The new run copies the finished tasks' outputs (at no cost) and hands them to the later tasks as context, exactly as if those tasks had just run. Files the earlier run's agents wrote are put back in its workspace; its journal starts with what it reused and names any file that could not be put back. Its header says **Resumed from run** with a link, and the earlier run's header links to the runs that resumed it.
+
+Resuming as it was is refused when something the run would use was taken away since it started: an LLM that was deleted, or a tool that is no longer available. Resume with the crew's current settings instead, or run it again. The crew must also still exist and be in your areas, as for starting a run.
+
+The task that failed runs again from the start. The dialog says what it had already spent. Anything it already did before it stopped, such as a note it saved or a comment it posted, may happen a second time. If an LLM the run used now lacks its provider key, the dialog warns that the remaining tasks are likely to fail as they were.
+
+A run can be resumed when at least one task finished and at least one is left. While a resume of a run is queued or running, that run cannot be resumed again. Chat turns and hand-offs are not resumed. You need **Run crews** (`crews.run`); for a work order's attempt, **Create work orders** (`work_orders.create`), and only its latest attempt can be resumed, from the work order's page.
+
+## Running a crew again
+<!-- permissions: crews.run -->
+On a finished run of a crew, **Run again** opens the run dialog with the same inputs and budget filled in, to start a fresh run of the crew as it is now. For a work order's attempt, use **Re-run** on the work order instead.
 
 ## Deleting a run
 <!-- permissions: runs.delete -->

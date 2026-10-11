@@ -289,6 +289,8 @@ type recorder struct {
 	seq   int
 	// files, when set, are uploaded by finish before the final status
 	files *runPaths
+	// tasks is how many tasks the run has, so a finished task's position can be checked
+	tasks int
 }
 
 func newRecorder(m *Manager, runID string, seq int) *recorder {

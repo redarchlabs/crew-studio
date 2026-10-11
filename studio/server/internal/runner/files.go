@@ -111,9 +111,17 @@ func (m *Manager) downloadInput(ctx context.Context, workspace string, a model.S
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(f, io.LimitReader(body, a.SizeBytes+1))
+	n, copyErr := io.Copy(f, io.LimitReader(body, a.SizeBytes+1))
 	closeErr := f.Close()
-	return errors.Join(copyErr, closeErr)
+	if err := errors.Join(copyErr, closeErr); err != nil {
+		return err
+	}
+	if n > a.SizeBytes {
+		// Storage handed back more than was recorded for the file; do not leave a truncated copy behind
+		_ = os.Remove(target)
+		return fmt.Errorf("the stored file is larger than the %d bytes recorded for it", a.SizeBytes)
+	}
+	return nil
 }
 
 func within(dir, path string) bool {
